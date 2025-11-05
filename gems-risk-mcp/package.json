@@ -1,7 +1,7 @@
 {
   "name": "@akgunaylabs/gems-risk-mcp",
   "version": "0.1.0",
-  "description": "MCP server for accessing GEMs (Global Earthquake Model) Risk Database",
+  "description": "MCP server for accessing GEMs (Global Emerging Markets) Risk Database - credit risk data for emerging markets from World Bank",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -16,9 +16,12 @@
     "mcp",
     "model-context-protocol",
     "gems",
-    "earthquake",
-    "risk",
-    "seismic"
+    "credit-risk",
+    "emerging-markets",
+    "worldbank",
+    "default-rates",
+    "recovery-rates",
+    "financial-risk"
   ],
   "author": "Akgunay Labs",
   "license": "MIT",

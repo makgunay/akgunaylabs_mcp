@@ -12,12 +12,14 @@ Model Context Protocol (MCP) is an open protocol that standardizes how applicati
 
 Located in `gems-risk-mcp/`
 
-A Model Context Protocol server that provides access to the GEMs (Global Earthquake Model) Risk Database, enabling AI assistants to query and analyze global earthquake risk data.
+A Model Context Protocol server that provides access to the GEMs (Global Emerging Markets) Risk Database from the World Bank, enabling AI assistants to query and analyze credit risk data for emerging market lending.
 
 **Features:**
-- Query earthquake risk data by region
-- Access hazard, exposure, and vulnerability information
-- Retrieve risk assessment metrics
+- Query default rates and recovery rates by region
+- Analyze credit risk by economic sector
+- Compare credit performance across emerging markets
+- Access comprehensive risk statistics from 29 development banks
+- Retrieve data covering $425+ billion in loans across 31 years
 
 ## Repository Structure
 
