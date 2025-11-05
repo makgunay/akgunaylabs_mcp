@@ -420,9 +420,7 @@ const handler = createMcpHandler(
         };
       }
     );
-  },
-  {},
-  { basePath: '/api' }
+  }
 );
 
 export default handler;
