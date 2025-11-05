@@ -56,11 +56,14 @@ const SECTOR_NAMES: Record<string, string> = {
 
 // Project type mapping
 const PROJECT_TYPE_NAMES: Record<string, string> = {
-  "_T": "All Project Types",
-  "CF": "Corporate Finance",
-  "FI": "Financial Institution",
-  "PF": "Project Finance",
+  "_Z": "Not applicable",
+  "_T": "Overall, incl. omitted categories",
   "O": "Other",
+  "CF": "Corporate Finance",
+  "FI": "Financial Institutions",
+  "PF": "Project Finance",
+  "SF": "Structured Finance",
+  "MX": "Mixed",
 };
 
 // Seniority mapping (debt hierarchy)

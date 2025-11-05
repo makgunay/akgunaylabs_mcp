@@ -95,28 +95,33 @@ const SECTOR_NAMES: Record<string, string> = {
 
 ---
 
-### 1.3 PROJECT_TYPE Mapping (✨ NEWLY ADDED)
+### 1.3 PROJECT_TYPE Mapping (✨ UPDATED - 8 Codes)
 
 **Project Type Names:**
 ```typescript
 const PROJECT_TYPE_NAMES: Record<string, string> = {
-  "_T": "All Project Types",
-  "CF": "Corporate Finance",
-  "FI": "Financial Institution",
-  "PF": "Project Finance",
+  "_Z": "Not applicable",
+  "_T": "Overall, incl. omitted categories",
   "O": "Other",
+  "CF": "Corporate Finance",
+  "FI": "Financial Institutions",
+  "PF": "Project Finance",
+  "SF": "Structured Finance",
+  "MX": "Mixed",
 };
 ```
 
 **Risk Profile (Verified):**
 - **CF (Corporate Finance):** 5.05% default rate - Highest risk
-- **FI (Financial Institution):** 3.16% default rate
+- **FI (Financial Institutions):** 3.16% default rate
 - **O (Other):** 1.74% default rate
 - **PF (Project Finance):** 1.65% default rate - Lowest risk
+- **SF (Structured Finance):** TBD - to be tested
+- **MX (Mixed):** TBD - to be tested
 
 **Usage:** Default rate analysis by project financing structure
 
-**Status:** ✅ Complete, integrated into codebase
+**Status:** ✅ Complete, integrated into codebase (updated 2025-11-05)
 
 ---
 
@@ -152,10 +157,10 @@ const SENIORITY_NAMES: Record<string, string> = {
 |-----------|-------|----------|--------|----------|
 | **REF_AREA** | 7 | REGION_NAMES, REGION_DISPLAY_NAMES | ✅ Complete | Geographic analysis |
 | **SECTOR** | 21 | SECTOR_NAMES | ✅ Complete | Industry analysis |
-| **PROJECT_TYPE** | 5 | PROJECT_TYPE_NAMES | ✅ Complete | Financing structure analysis |
+| **PROJECT_TYPE** | 8 | PROJECT_TYPE_NAMES | ✅ Complete | Financing structure analysis |
 | **SENIORITY** | 3 | SENIORITY_NAMES | ✅ Complete | Debt security analysis |
 
-**Total Mappable Codes:** 36 across 4 dimensions
+**Total Mappable Codes:** 39 across 4 dimensions (updated with SF and MX project types)
 
 ### Inactive Dimensions (Not Needed)
 
@@ -589,13 +594,13 @@ done
 1. **All dimension mappings integrated:**
    - ✅ 7 region codes (already had)
    - ✅ 21 sector codes (just added)
-   - ✅ 5 project type codes (just added)
+   - ✅ 8 project type codes (updated 2025-11-05)
    - ✅ 3 seniority codes (just added)
-   - **Total: 36 codes mapped**
+   - **Total: 39 codes mapped**
 
 2. **Code changes:**
    - ✅ Added SECTOR_NAMES mapping (21 codes)
-   - ✅ Added PROJECT_TYPE_NAMES mapping (5 codes)
+   - ✅ Added PROJECT_TYPE_NAMES mapping (8 codes, updated 2025-11-05)
    - ✅ Added SENIORITY_NAMES mapping (3 codes)
    - ✅ TypeScript compilation verified
 
@@ -657,14 +662,14 @@ SECTOR_NAMES = {
   F, U, I, CST, CD, M, O, CS, HC, E, RE, IT, A  // GICS sectors (14)
 }
 
-// PROJECT TYPES (5)
-PROJECT_TYPE_NAMES = { _T, CF, FI, PF, O }
+// PROJECT TYPES (8)
+PROJECT_TYPE_NAMES = { _Z, _T, O, CF, FI, PF, SF, MX }
 
 // SENIORITY (3)
 SENIORITY_NAMES = { _T, SS, SU }
 ```
 
-**Total Mapped Codes: 36 across 4 dimensions**
+**Total Mapped Codes: 39 across 4 dimensions (7 regions + 21 sectors + 8 project types + 3 seniority levels)**
 
 ---
 
