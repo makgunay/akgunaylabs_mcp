@@ -423,4 +423,5 @@ const handler = createMcpHandler(
   }
 );
 
-export default handler;
+// Export as named HTTP methods for Vercel API routes
+export { handler as GET, handler as POST };
