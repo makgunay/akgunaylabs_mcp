@@ -26,6 +26,50 @@ const REGION_DISPLAY_NAMES: Record<string, string> = {
   "SSF": "Sub-Saharan Africa",
 };
 
+// Sector code mapping (GICS + IFC categories)
+const SECTOR_NAMES: Record<string, string> = {
+  "_T": "Overall",
+  "_Z": "Not applicable",
+  // IFC-specific categories
+  "NF": "Non-financial institutions",
+  "FI": "Financial Institutions",
+  "BK": "Banking",
+  "IN": "Infrastructure",
+  "NB": "Non-banking financial institutions",
+  "R": "Renewables",
+  "S": "Services",
+  // GICS (Global Industry Classification Standard) sectors
+  "F": "GICS: Financials",
+  "U": "GICS: Utilities",
+  "I": "GICS: Industrials",
+  "CST": "GICS: Consumer Staples",
+  "CD": "GICS: Consumer Discretionary",
+  "M": "GICS: Materials",
+  "O": "GICS: Others",
+  "CS": "GICS: Communication Services",
+  "HC": "GICS: Health Care",
+  "E": "GICS: Energy",
+  "RE": "GICS: Real Estate",
+  "IT": "GICS: Information Technology",
+  "A": "GICS: Administration",
+};
+
+// Project type mapping
+const PROJECT_TYPE_NAMES: Record<string, string> = {
+  "_T": "All Project Types",
+  "CF": "Corporate Finance",
+  "FI": "Financial Institution",
+  "PF": "Project Finance",
+  "O": "Other",
+};
+
+// Seniority mapping (debt hierarchy)
+const SENIORITY_NAMES: Record<string, string> = {
+  "_T": "All Seniority Levels",
+  "SS": "Senior Secured",
+  "SU": "Senior Unsecured",
+};
+
 // Mock data for fallback
 const mockCreditData: Record<string, any> = {
   global: {
