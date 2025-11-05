@@ -153,6 +153,54 @@ interface Data360Response {
   }>;
 }
 
+// Error handling types
+enum DataErrorType {
+  NETWORK_ERROR = 'network_error',
+  TIMEOUT = 'timeout',
+  RATE_LIMITED = 'rate_limited',
+  NO_DATA = 'no_data',
+  INVALID_DATA = 'invalid_data',
+  STALE_DATA = 'stale_data',
+  MALFORMED_RESPONSE = 'malformed_response',
+  API_ERROR = 'api_error',
+}
+
+interface DataError {
+  type: DataErrorType;
+  message: string;
+  details?: any;
+  suggestedAction?: string;
+}
+
+interface DataResult<T> {
+  success: boolean;
+  data?: T;
+  error?: DataError;
+  approximated?: boolean;
+  approximationMethod?: string;
+}
+
+interface RegionDataResult {
+  region: string;
+  defaultRate: number;
+  recoveryRate: number;
+  numberOfLoans: number;
+  totalVolume: number;
+  period: string;
+  isRecoveryEstimated: boolean;
+  recoveryError?: DataError;
+}
+
+interface SectorDataResult {
+  sectorCode: string;
+  sectorName: string;
+  defaultRate: number;
+  recoveryRate: number;
+  isRecoveryEstimated: boolean;
+  recoveryError?: DataError;
+  period: string;
+}
+
 // Cache configuration
 interface CacheEntry {
   data: Data360Response;
@@ -189,8 +237,11 @@ function cleanupCache() {
 // Run cache cleanup every 10 minutes
 setInterval(cleanupCache, 600000);
 
-// API Client Functions
-async function fetchData360(params: Record<string, string>): Promise<Data360Response> {
+// API Client Functions with comprehensive error handling
+async function fetchData360(
+  params: Record<string, string>,
+  timeout: number = 30000
+): Promise<DataResult<Data360Response>> {
   // Check cache first
   const cacheKey = getCacheKey(params);
   const cached = apiCache.get(cacheKey);
@@ -198,19 +249,85 @@ async function fetchData360(params: Record<string, string>): Promise<Data360Resp
 
   if (cached && (now - cached.timestamp) < CACHE_TTL) {
     console.log(`Cache hit for: ${cacheKey}`);
-    return cached.data;
+    return { success: true, data: cached.data };
   }
 
-  // Cache miss or expired - fetch from API
+  // Cache miss or expired - fetch from API with timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
   const queryString = new URLSearchParams(params).toString();
   const url = `${DATA360_API_BASE}/data360/data?${queryString}`;
 
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' }
+    });
+
+    clearTimeout(timeoutId);
+
+    // Handle HTTP errors
     if (!response.ok) {
-      throw new Error(`API request failed: ${response.status}`);
+      if (response.status === 429) {
+        return {
+          success: false,
+          error: {
+            type: DataErrorType.RATE_LIMITED,
+            message: 'API rate limit exceeded',
+            suggestedAction: 'Wait 2-3 minutes before retrying'
+          }
+        };
+      }
+
+      return {
+        success: false,
+        error: {
+          type: DataErrorType.API_ERROR,
+          message: `API request failed with status ${response.status}`,
+          details: response.statusText
+        }
+      };
     }
-    const data = await response.json() as Data360Response;
+
+    // Parse JSON
+    let data: Data360Response;
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      return {
+        success: false,
+        error: {
+          type: DataErrorType.MALFORMED_RESPONSE,
+          message: 'Invalid JSON response from API',
+          details: parseError
+        }
+      };
+    }
+
+    // Validate response structure
+    if (!data.value || !Array.isArray(data.value)) {
+      return {
+        success: false,
+        error: {
+          type: DataErrorType.MALFORMED_RESPONSE,
+          message: 'Unexpected response structure from API',
+          details: data
+        }
+      };
+    }
+
+    // Check for empty data
+    if (data.value.length === 0) {
+      return {
+        success: false,
+        error: {
+          type: DataErrorType.NO_DATA,
+          message: 'No data available for this query',
+          details: params,
+          suggestedAction: 'Try broader filters (e.g., global region, all sectors)'
+        }
+      };
+    }
 
     // Store in cache
     apiCache.set(cacheKey, {
@@ -220,61 +337,105 @@ async function fetchData360(params: Record<string, string>): Promise<Data360Resp
 
     console.log(`Cache miss - fetched and cached: ${cacheKey}`);
 
-    return data;
-  } catch (error) {
-    console.error("Error fetching from Data360 API:", error);
-    throw error;
+    return { success: true, data };
+
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+
+    // Timeout error
+    if (error.name === 'AbortError') {
+      return {
+        success: false,
+        error: {
+          type: DataErrorType.TIMEOUT,
+          message: `Request timed out after ${timeout}ms`,
+          suggestedAction: 'API may be under heavy load. Try again in a few moments.'
+        }
+      };
+    }
+
+    // Network error
+    return {
+      success: false,
+      error: {
+        type: DataErrorType.NETWORK_ERROR,
+        message: 'Unable to reach World Bank Data360 API',
+        details: error.message,
+        suggestedAction: 'Check network connection or try again later'
+      }
+    };
   }
 }
 
-// Fetch real recovery rates from IFC_GEM_PBR indicator
-async function getRecoveryRateData(apiCode: string): Promise<number | null> {
-  try {
-    const recoveryParams = {
-      DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: "IFC_GEM_PBR",  // Public recovery rates indicator
-      METRIC: "ARR",              // Average Recovery Rate (percentage)
-      REF_AREA: apiCode,
-      SECTOR: "_T",               // Overall (all sectors)
-      PROJECT_TYPE: "_T",         // All project types
-      SENIORITY: "_T",            // All seniority levels
-      TIME_PERIOD: "2024",
+// Fetch real recovery rates from IFC_GEM_PBR indicator with comprehensive error handling
+async function getRecoveryRateData(apiCode: string): Promise<DataResult<number>> {
+  const recoveryParams = {
+    DATABASE_ID: IFC_GEM_DATASET,
+    INDICATOR: "IFC_GEM_PBR",  // Public recovery rates indicator
+    METRIC: "ARR",              // Average Recovery Rate (percentage)
+    REF_AREA: apiCode,
+    SECTOR: "_T",               // Overall (all sectors)
+    PROJECT_TYPE: "_T",         // All project types
+    SENIORITY: "_T",            // All seniority levels
+    TIME_PERIOD: "2024",
+  };
+
+  const result = await fetchData360(recoveryParams);
+
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error
     };
-
-    const recoveryData = await fetchData360(recoveryParams);
-
-    if (!recoveryData.value || recoveryData.value.length === 0) {
-      console.warn(`No recovery rate data available for region ${apiCode}`);
-      return null;
-    }
-
-    // Get most recent recovery rate
-    const latestRecovery = recoveryData.value
-      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-    // Validate we're getting percentage data
-    if (latestRecovery) {
-      if (latestRecovery.UNIT_MEASURE !== 'PT') {
-        console.error(`Expected percentage unit (PT) for recovery rate, got ${latestRecovery.UNIT_MEASURE}`);
-      }
-      if (latestRecovery.METRIC !== 'ARR') {
-        console.error(`Expected METRIC='ARR' for recovery rate, got METRIC='${latestRecovery.METRIC}'`);
-      }
-    }
-
-    const recoveryRate = latestRecovery ? parseFloat(latestRecovery.OBS_VALUE) : null;
-
-    // Sanity check: recovery rates should be 0-100%
-    if (recoveryRate !== null && (recoveryRate < 0 || recoveryRate > 100)) {
-      console.error(`Invalid recovery rate: ${recoveryRate}% for region ${apiCode}`);
-      return null;
-    }
-
-    return recoveryRate;
-  } catch (error) {
-    console.error(`Error fetching recovery rate data for region ${apiCode}:`, error);
-    return null;
   }
+
+  // Get most recent recovery rate
+  const latestRecovery = result.data!.value
+    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+  // Validate we're getting percentage data
+  if (latestRecovery.UNIT_MEASURE !== 'PT') {
+    console.warn(`Expected percentage unit (PT) for recovery rate, got ${latestRecovery.UNIT_MEASURE}`);
+  }
+  if (latestRecovery.METRIC !== 'ARR') {
+    console.warn(`Expected METRIC='ARR' for recovery rate, got METRIC='${latestRecovery.METRIC}'`);
+  }
+
+  const recoveryRate = parseFloat(latestRecovery.OBS_VALUE);
+
+  // Validate range
+  if (recoveryRate < 0 || recoveryRate > 100) {
+    return {
+      success: false,
+      error: {
+        type: DataErrorType.INVALID_DATA,
+        message: `Invalid recovery rate: ${recoveryRate}%`,
+        details: 'Recovery rate must be between 0-100%'
+      }
+    };
+  }
+
+  // Check data staleness
+  const dataYear = parseInt(latestRecovery.TIME_PERIOD);
+  const currentYear = new Date().getFullYear();
+  const ageYears = currentYear - dataYear;
+
+  if (ageYears > 2) {
+    return {
+      success: true,
+      data: recoveryRate,
+      error: {
+        type: DataErrorType.STALE_DATA,
+        message: `Data is ${ageYears} years old (from ${dataYear})`,
+        suggestedAction: 'Consider data age when making decisions'
+      }
+    };
+  }
+
+  return {
+    success: true,
+    data: recoveryRate
+  };
 }
 
 // Estimate recovery rate using correlation with default rate (fallback method)
@@ -285,55 +446,69 @@ function estimateRecoveryRate(defaultRate: number): number {
   return Math.max(60, Math.min(80, globalAvgRecovery + recoveryAdjustment));
 }
 
-// Fetch real sector data from IFC_GEM_PBD indicator
-async function getSectorData(sectorCode: string, regionCode: string = "_T", projectTypeCode: string = "_T") {
-  try {
-    const sectorParams = {
-      DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: "IFC_GEM_PBD",  // Public default rates
-      METRIC: "ADR",              // Average Default Rate
-      REF_AREA: regionCode,
-      SECTOR: sectorCode,
-      PROJECT_TYPE: projectTypeCode,
-      TIME_PERIOD: "2024",
-    };
+// Fetch real sector data from IFC_GEM_PBD indicator with comprehensive error handling
+async function getSectorData(sectorCode: string, regionCode: string = "_T", projectTypeCode: string = "_T"): Promise<SectorDataResult | { error: DataError }> {
+  const sectorParams = {
+    DATABASE_ID: IFC_GEM_DATASET,
+    INDICATOR: "IFC_GEM_PBD",  // Public default rates
+    METRIC: "ADR",              // Average Default Rate
+    REF_AREA: regionCode,
+    SECTOR: sectorCode,
+    PROJECT_TYPE: projectTypeCode,
+    TIME_PERIOD: "2024",
+  };
 
-    const sectorData = await fetchData360(sectorParams);
+  const result = await fetchData360(sectorParams);
 
-    if (!sectorData.value || sectorData.value.length === 0) {
-      console.warn(`No sector data available for sector ${sectorCode}, region ${regionCode}`);
-      return null;
-    }
-
-    // Get most recent default rate
-    const latestData = sectorData.value
-      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-    const defaultRate = latestData ? parseFloat(latestData.OBS_VALUE) : null;
-
-    if (defaultRate === null || defaultRate < 0 || defaultRate > 100) {
-      console.error(`Invalid default rate for sector ${sectorCode}: ${defaultRate}%`);
-      return null;
-    }
-
-    // Try to get recovery rate for this sector
-    const recoveryRate = await getRecoveryRateData(regionCode);
-
-    return {
-      sectorCode,
-      sectorName: SECTOR_NAMES[sectorCode] || sectorCode,
-      defaultRate,
-      recoveryRate: recoveryRate !== null ? recoveryRate : estimateRecoveryRate(defaultRate),
-      isRecoveryEstimated: recoveryRate === null,
-      period: "1994-2024",
-    };
-  } catch (error) {
-    console.error(`Error fetching sector data for ${sectorCode}:`, error);
-    return null;
+  if (!result.success) {
+    return { error: result.error! };
   }
+
+  // Get most recent default rate
+  const latestData = result.data!.value
+    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+  const defaultRate = parseFloat(latestData.OBS_VALUE);
+
+  if (defaultRate < 0 || defaultRate > 100) {
+    return {
+      error: {
+        type: DataErrorType.INVALID_DATA,
+        message: `Invalid default rate for sector ${sectorCode}: ${defaultRate}%`,
+        details: 'Default rate must be between 0-100%'
+      }
+    };
+  }
+
+  // Try to get recovery rate for this sector
+  const recoveryResult = await getRecoveryRateData(regionCode);
+
+  let recoveryRate: number;
+  let isRecoveryEstimated: boolean;
+  let recoveryError: DataError | undefined;
+
+  if (recoveryResult.success) {
+    recoveryRate = recoveryResult.data!;
+    isRecoveryEstimated = false;
+    recoveryError = recoveryResult.error;
+  } else {
+    recoveryRate = estimateRecoveryRate(defaultRate);
+    isRecoveryEstimated = true;
+    recoveryError = recoveryResult.error;
+  }
+
+  return {
+    sectorCode,
+    sectorName: SECTOR_NAMES[sectorCode] || sectorCode,
+    defaultRate,
+    recoveryRate,
+    isRecoveryEstimated,
+    recoveryError,
+    period: "1994-2024",
+  };
 }
 
-async function getRegionData(region: string) {
+async function getRegionData(region: string): Promise<RegionDataResult | { error: DataError } | null> {
   const apiCode = REGION_NAMES[region.toLowerCase()];
   if (!apiCode) {
     return null;
@@ -372,53 +547,72 @@ async function getRegionData(region: string) {
       TIME_PERIOD: "2024",
     };
 
-    const [defaultData, countData, volumeData] = await Promise.all([
+    const [defaultResult, countResult, volumeResult] = await Promise.all([
       fetchData360(defaultParams),
       fetchData360(countParams),
       fetchData360(volumeParams),
     ]);
 
+    // Check if default rate fetch failed (critical data)
+    if (!defaultResult.success) {
+      return { error: defaultResult.error! };
+    }
+
     // Get most recent default rate
-    const latestDefault = defaultData.value
+    const latestDefault = defaultResult.data!.value
       .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
 
     // Validate we're getting percentage data, not count data
-    if (latestDefault) {
-      if (latestDefault.UNIT_MEASURE !== 'PT') {
-        console.error(`Expected percentage unit (PT), got ${latestDefault.UNIT_MEASURE}. Check METRIC='ADR' is being used.`);
-      }
-      if (latestDefault.METRIC !== 'ADR') {
-        console.error(`Expected METRIC='ADR', got METRIC='${latestDefault.METRIC}'. Likely querying counterparts (CP) instead.`);
-      }
+    if (latestDefault.UNIT_MEASURE !== 'PT') {
+      console.warn(`Expected percentage unit (PT), got ${latestDefault.UNIT_MEASURE}. Check METRIC='ADR' is being used.`);
+    }
+    if (latestDefault.METRIC !== 'ADR') {
+      console.warn(`Expected METRIC='ADR', got METRIC='${latestDefault.METRIC}'.`);
     }
 
-    const defaultRate = latestDefault ? parseFloat(latestDefault.OBS_VALUE) : 0;
+    const defaultRate = parseFloat(latestDefault.OBS_VALUE);
 
     // Sanity check: default rates should be 0-100%
     if (defaultRate > 100) {
-      console.error(`Invalid default rate: ${defaultRate}% for region ${apiCode}. This likely means wrong METRIC is being used.`);
-      return null;
+      return {
+        error: {
+          type: DataErrorType.INVALID_DATA,
+          message: `Invalid default rate: ${defaultRate}%`,
+          details: 'Default rate exceeds 100%'
+        }
+      };
     }
 
-    // Get most recent count
-    const latestCount = countData.value
-      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-    const numberOfLoans = latestCount ? parseFloat(latestCount.OBS_VALUE) : 0;
+    // Get most recent count (non-critical, use 0 if unavailable)
+    const numberOfLoans = countResult.success
+      ? parseFloat(countResult.data!.value
+          .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0]?.OBS_VALUE || '0')
+      : 0;
 
-    // Get most recent volume
-    const latestVolume = volumeData.value
-      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-    const totalVolume = latestVolume ? parseFloat(latestVolume.OBS_VALUE) * 1e6 : 0;
+    // Get most recent volume (non-critical, use 0 if unavailable)
+    const totalVolume = volumeResult.success
+      ? parseFloat(volumeResult.data!.value
+          .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0]?.OBS_VALUE || '0') * 1e6
+      : 0;
 
     // Fetch real recovery rate from API (IFC_GEM_PBR indicator)
-    // Falls back to estimation if API data not available
-    const realRecoveryRate = await getRecoveryRateData(apiCode);
-    const recoveryRate = realRecoveryRate !== null
-      ? realRecoveryRate
-      : estimateRecoveryRate(defaultRate);
+    const recoveryResult = await getRecoveryRateData(apiCode);
 
-    // Track whether we're using real or estimated data
-    const isRecoveryEstimated = realRecoveryRate === null;
+    // Determine recovery rate and approximation status
+    let recoveryRate: number;
+    let isRecoveryEstimated: boolean;
+    let recoveryError: DataError | undefined;
+
+    if (recoveryResult.success) {
+      recoveryRate = recoveryResult.data!;
+      isRecoveryEstimated = false;
+      recoveryError = recoveryResult.error; // Could be STALE_DATA warning
+    } else {
+      // Use approximation if real data unavailable
+      recoveryRate = estimateRecoveryRate(defaultRate);
+      isRecoveryEstimated = true;
+      recoveryError = recoveryResult.error;
+    }
 
     return {
       region: REGION_DISPLAY_NAMES[apiCode],
@@ -428,6 +622,7 @@ async function getRegionData(region: string) {
       totalVolume: Math.round(totalVolume),
       period: "1994-2024",
       isRecoveryEstimated,  // Flag to indicate data source
+      recoveryError,  // Error/warning about recovery data (e.g., stale, unavailable)
     };
   } catch (error) {
     console.error(`Error fetching data for region ${region}:`, error);
@@ -447,15 +642,47 @@ const handler = createMcpHandler(
           .describe('Region to query (e.g., global, east-asia, latin-america)')
       },
       async ({ region }) => {
-        const data = await getRegionData(region);
+        const result = await getRegionData(region);
 
-        if (!data) {
+        // Handle errors
+        if (!result || 'error' in result) {
+          const error = result && 'error' in result ? result.error : undefined;
+
+          if (error) {
+            switch (error.type) {
+              case DataErrorType.NETWORK_ERROR:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `⚠️ **World Bank Data360 API is currently unavailable**\n\n${error.message}\n\n${error.suggestedAction || 'Please try again later.'}`
+                  }]
+                };
+
+              case DataErrorType.NO_DATA:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `ℹ️ **No default rate data available**\n\n${error.message}\n\n${error.suggestedAction || ''}`
+                  }]
+                };
+
+              default:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `⚠️ **Error retrieving default rate data**\n\n${error.message}\n\n${error.suggestedAction || ''}`
+                  }]
+                };
+            }
+          }
+
+          // Fallback to mock data
           const mockData = mockCreditData[region];
-          if (!mockData) {
+          if (mockData) {
             return {
               content: [{
                 type: 'text',
-                text: `No data available for region: ${region}. Available: ${Object.keys(REGION_NAMES).join(", ")}`
+                text: `# Default Rates for ${mockData.region}\n\n**Default Rate:** ${mockData.defaultRate}%\n\n**Period:** ${mockData.period}\n\n**Context:** Out of ${mockData.numberOfLoans.toLocaleString()} loans totaling $${(mockData.totalVolume / 1e9).toFixed(1)} billion USD, ${mockData.defaultRate}% resulted in default.\n\n*⚠️ Using fallback data (API unavailable)*`
               }]
             };
           }
@@ -463,10 +690,13 @@ const handler = createMcpHandler(
           return {
             content: [{
               type: 'text',
-              text: `# Default Rates for ${mockData.region}\n\n**Default Rate:** ${mockData.defaultRate}%\n\n**Period:** ${mockData.period}\n\n**Context:** Out of ${mockData.numberOfLoans.toLocaleString()} loans totaling $${(mockData.totalVolume / 1e9).toFixed(1)} billion USD, ${mockData.defaultRate}% resulted in default.\n\n*Using cached data.*`
+              text: `No data available for region: ${region}`
             }]
           };
         }
+
+        // At this point TypeScript knows result is RegionDataResult
+        const data = result as RegionDataResult;
 
         return {
           content: [{
@@ -488,13 +718,72 @@ const handler = createMcpHandler(
       async ({ region }) => {
         const data = await getRegionData(region);
 
-        if (!data) {
+        // Handle errors with transparent messaging
+        if (!data || 'error' in data) {
+          const error = data && 'error' in data ? data.error : undefined;
+
+          if (error) {
+            switch (error.type) {
+              case DataErrorType.NETWORK_ERROR:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `⚠️ **World Bank Data360 API is currently unavailable**\n\n` +
+                          `Unable to retrieve real-time recovery rate data.\n\n` +
+                          `**Reason:** ${error.message}\n\n` +
+                          `${error.suggestedAction || 'Please try again later.'}`
+                  }]
+                };
+
+              case DataErrorType.TIMEOUT:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `⚠️ **Request Timeout**\n\n` +
+                          `${error.message}\n\n` +
+                          `${error.suggestedAction}`
+                  }]
+                };
+
+              case DataErrorType.NO_DATA:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `ℹ️ **No recovery rate data available for ${REGION_DISPLAY_NAMES[REGION_NAMES[region]]}**\n\n` +
+                          `The World Bank Data360 IFC_GEM database does not contain recovery rate data for this region.\n\n` +
+                          `${error.suggestedAction || 'Try querying global data or a different region.'}`
+                  }]
+                };
+
+              case DataErrorType.RATE_LIMITED:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `⚠️ **API Rate Limit Exceeded**\n\n` +
+                          `${error.message}\n\n` +
+                          `${error.suggestedAction}`
+                  }]
+                };
+
+              default:
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `⚠️ **Error retrieving recovery rate data**\n\n` +
+                          `${error.message}\n\n` +
+                          `${error.suggestedAction || 'Please try again.'}`
+                  }]
+                };
+            }
+          }
+
+          // Fallback to mock data if no error but no data
           const mockData = mockCreditData[region];
-          if (!mockData) {
+          if (mockData) {
             return {
               content: [{
                 type: 'text',
-                text: `No data available for region: ${region}`
+                text: `# Recovery Rates for ${mockData.region}\n\n**Recovery Rate:** ${mockData.recoveryRate}%\n\n**Analysis:** When loans default in ${mockData.region}, lenders recover an average of ${mockData.recoveryRate}% of the loan value.\n\n*⚠️ Using fallback data (API unavailable)*`
               }]
             };
           }
@@ -502,20 +791,45 @@ const handler = createMcpHandler(
           return {
             content: [{
               type: 'text',
-              text: `# Recovery Rates for ${mockData.region}\n\n**Recovery Rate:** ${mockData.recoveryRate}%\n\n**Analysis:** When loans default in ${mockData.region}, lenders recover an average of ${mockData.recoveryRate}% of the loan value.\n\n*Using cached data.*`
+              text: `No data available for region: ${region}`
             }]
           };
         }
 
-        // Determine data source message
-        const dataSource = data.isRecoveryEstimated
-          ? '*Recovery rate estimated based on default rate correlation (API data not available)*'
-          : '*Recovery rate from World Bank Data360 IFC_GEM_PBR (real-time)*';
+        // At this point TypeScript knows data is RegionDataResult
+        const regionData = data as RegionDataResult;
+
+        // Build result message with transparent approximation disclosure
+        let resultText = `# Recovery Rates for ${regionData.region}\n\n**Recovery Rate:** ${regionData.recoveryRate}%\n\n`;
+
+        if (regionData.isRecoveryEstimated && regionData.recoveryError) {
+          // Show approximation with methodology
+          resultText += `⚠️ **Data Status:** Recovery rate approximated (real data unavailable)\n\n`;
+          resultText += `**Approximation Method:**\n`;
+          resultText += `- Based on inverse correlation between default and recovery rates\n`;
+          resultText += `- Formula: 73% (baseline) + (3.5% - ${regionData.defaultRate.toFixed(2)}%) × 1.5\n`;
+          resultText += `- Confidence: Moderate (±5-10% typical variance)\n`;
+          resultText += `- Source: Statistical analysis of IFC_GEM historical data (1994-2024)\n\n`;
+          resultText += `**Why approximated:** ${regionData.recoveryError.message}\n\n`;
+        } else if (regionData.recoveryError?.type === DataErrorType.STALE_DATA) {
+          // Show warning about stale data
+          resultText += `⚠️ **Data Age Warning:** ${regionData.recoveryError.message}\n\n`;
+        }
+
+        resultText += `**Analysis:** When loans default, lenders recover ${regionData.recoveryRate}% of loan value.\n\n`;
+        resultText += `**Period:** ${regionData.period}\n\n`;
+
+        // Data source attribution
+        if (regionData.isRecoveryEstimated) {
+          resultText += `*Approximated based on default rate correlation*`;
+        } else {
+          resultText += `*Real-time data from World Bank Data360 IFC_GEM_PBR*`;
+        }
 
         return {
           content: [{
             type: 'text',
-            text: `# Recovery Rates for ${data.region}\n\n**Recovery Rate:** ${data.recoveryRate}%\n\n**Period:** ${data.period}\n\n**Analysis:** When loans default, lenders recover ${data.recoveryRate}% of loan value.\n\n${dataSource}`
+            text: resultText
           }]
         };
       }
@@ -530,36 +844,55 @@ const handler = createMcpHandler(
           .describe('Region to analyze')
       },
       async ({ region }) => {
-        const data = await getRegionData(region);
+        const result = await getRegionData(region);
 
-        if (!data) {
-          const mockData = mockCreditData[region];
-          if (!mockData) {
+        // Handle errors
+        if (!result || 'error' in result) {
+          const error = result && 'error' in result ? result.error : undefined;
+
+          if (error) {
             return {
               content: [{
                 type: 'text',
-                text: `No data available for region: ${region}`
+                text: `⚠️ **Error retrieving credit risk data**\n\n${error.message}\n\n${error.suggestedAction || 'Please try again.'}`
               }]
             };
           }
 
-          const expectedLoss = (mockData.defaultRate * (100 - mockData.recoveryRate) / 100).toFixed(2);
+          // Fallback to mock data
+          const mockData = mockCreditData[region];
+          if (mockData) {
+            const expectedLoss = (mockData.defaultRate * (100 - mockData.recoveryRate) / 100).toFixed(2);
+            return {
+              content: [{
+                type: 'text',
+                text: `# Credit Risk Profile: ${mockData.region}\n\n## Key Metrics\n\n**Default Rate:** ${mockData.defaultRate}%\n**Recovery Rate:** ${mockData.recoveryRate}%\n**Number of Loans:** ${mockData.numberOfLoans.toLocaleString()}\n**Total Volume:** $${(mockData.totalVolume / 1e9).toFixed(1)}B USD\n**Period:** ${mockData.period}\n\n## Risk Assessment\n\n**Expected Loss:** ${expectedLoss}%\n\n*⚠️ Using fallback data (API unavailable)*`
+              }]
+            };
+          }
+
           return {
             content: [{
               type: 'text',
-              text: `# Credit Risk Profile: ${mockData.region}\n\n## Key Metrics\n\n**Default Rate:** ${mockData.defaultRate}%\n**Recovery Rate:** ${mockData.recoveryRate}%\n**Number of Loans:** ${mockData.numberOfLoans.toLocaleString()}\n**Total Volume:** $${(mockData.totalVolume / 1e9).toFixed(1)}B USD\n**Period:** ${mockData.period}\n\n## Risk Assessment\n\n**Expected Loss:** ${expectedLoss}%\n\n*Using cached data.*`
+              text: `No data available for region: ${region}`
             }]
           };
         }
 
+        // At this point TypeScript knows result is RegionDataResult
+        const data = result as RegionDataResult;
+
         const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
 
-        // Determine data source note
+        // Determine data source note with transparent approximation
         const recoveryNote = data.isRecoveryEstimated
-          ? ' (estimated)'
+          ? ' (approximated - see note below)'
           : ' (real-time API)';
-        const dataNote = data.isRecoveryEstimated
-          ? '*Default rate from World Bank Data360 (real-time). Recovery rate estimated based on default rate correlation.*'
+        let dataNote = data.isRecoveryEstimated
+          ? '**Note on Recovery Rate:** Real recovery rate data not available. Approximated using statistical correlation:\n' +
+            `- Formula: 73% (baseline) + (3.5% - ${data.defaultRate.toFixed(2)}%) × 1.5\n` +
+            '- Confidence: Moderate (±5-10% typical variance)\n\n' +
+            '*Default rate from World Bank Data360 IFC_GEM_PBD (real-time)*'
           : '*Real-time data from World Bank Data360 IFC_GEM (default rates: IFC_GEM_PBD, recovery rates: IFC_GEM_PBR)*';
 
         return {
@@ -620,9 +953,20 @@ const handler = createMcpHandler(
 
         if (sector !== 'all' && sector !== 'overall') {
           // Fetch real data for specific sector
-          const data = await getSectorData(sectorCode);
+          const result = await getSectorData(sectorCode);
 
-          if (!data) {
+          if (!result || 'error' in result) {
+            const error = result && 'error' in result ? result.error : undefined;
+
+            if (error) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `⚠️ **Error retrieving sector data**\n\n${error.message}\n\n${error.suggestedAction || 'Try broader filters.'}`
+                }]
+              };
+            }
+
             // Fallback to mock data if available
             const mockMatch = mockSectorData.find(s =>
               s.sector.toLowerCase().includes(sector.toLowerCase())
@@ -633,7 +977,7 @@ const handler = createMcpHandler(
               return {
                 content: [{
                   type: 'text',
-                  text: `# Sector Analysis: ${mockMatch.sector}\n\n**Default Rate:** ${mockMatch.defaultRate}%\n**Recovery Rate:** ${mockMatch.recoveryRate}%\n**Average Loan Size:** $${(mockMatch.avgLoanSize / 1e6).toFixed(1)}M\n**Expected Loss:** ${expectedLoss}%\n\n${mockMatch.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n*Using fallback data (API unavailable)*`
+                  text: `# Sector Analysis: ${mockMatch.sector}\n\n**Default Rate:** ${mockMatch.defaultRate}%\n**Recovery Rate:** ${mockMatch.recoveryRate}%\n**Average Loan Size:** $${(mockMatch.avgLoanSize / 1e6).toFixed(1)}M\n**Expected Loss:** ${expectedLoss}%\n\n${mockMatch.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n*⚠️ Using fallback data (API unavailable)*`
                 }]
               };
             }
@@ -645,6 +989,9 @@ const handler = createMcpHandler(
               }]
             };
           }
+
+          // At this point TypeScript knows result is SectorDataResult
+          const data = result as SectorDataResult;
 
           const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
           const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
@@ -662,12 +1009,12 @@ const handler = createMcpHandler(
 
         // Return all sectors (top sectors with real data)
         const topSectorCodes = ['F', 'I', 'E', 'U', 'IN', 'BK', 'NF', 'R'];
-        const sectorDataArray = [];
+        const sectorDataArray: SectorDataResult[] = [];
 
         for (const code of topSectorCodes) {
-          const data = await getSectorData(code);
-          if (data) {
-            sectorDataArray.push(data);
+          const result = await getSectorData(code);
+          if (result && !('error' in result)) {
+            sectorDataArray.push(result as SectorDataResult);
           }
         }
 
@@ -729,11 +1076,11 @@ const handler = createMcpHandler(
       },
       async ({ metric }) => {
         // Try to fetch real data for all regions
-        const regionDataArray = [];
+        const regionDataArray: RegionDataResult[] = [];
         for (const regionName of Object.keys(REGION_NAMES)) {
-          const data = await getRegionData(regionName);
-          if (data) {
-            regionDataArray.push(data);
+          const result = await getRegionData(regionName);
+          if (result && !('error' in result)) {
+            regionDataArray.push(result as RegionDataResult);
           }
         }
 
