@@ -130,6 +130,7 @@ const mockCreditData: Record<string, any> = {
   },
 };
 
+// Mock sector data kept as fallback only
 const mockSectorData = [
   { sector: "Financial Services", defaultRate: 2.8, recoveryRate: 78, avgLoanSize: 32e6 },
   { sector: "Infrastructure", defaultRate: 3.1, recoveryRate: 75, avgLoanSize: 85e6 },
@@ -222,6 +223,54 @@ function estimateRecoveryRate(defaultRate: number): number {
   const globalAvgDefault = 3.5;
   const recoveryAdjustment = (globalAvgDefault - defaultRate) * 1.5;
   return Math.max(60, Math.min(80, globalAvgRecovery + recoveryAdjustment));
+}
+
+// Fetch real sector data from IFC_GEM_PBD indicator
+async function getSectorData(sectorCode: string, regionCode: string = "_T", projectTypeCode: string = "_T") {
+  try {
+    const sectorParams = {
+      DATABASE_ID: IFC_GEM_DATASET,
+      INDICATOR: "IFC_GEM_PBD",  // Public default rates
+      METRIC: "ADR",              // Average Default Rate
+      REF_AREA: regionCode,
+      SECTOR: sectorCode,
+      PROJECT_TYPE: projectTypeCode,
+      TIME_PERIOD: "2024",
+    };
+
+    const sectorData = await fetchData360(sectorParams);
+
+    if (!sectorData.value || sectorData.value.length === 0) {
+      console.warn(`No sector data available for sector ${sectorCode}, region ${regionCode}`);
+      return null;
+    }
+
+    // Get most recent default rate
+    const latestData = sectorData.value
+      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+    const defaultRate = latestData ? parseFloat(latestData.OBS_VALUE) : null;
+
+    if (defaultRate === null || defaultRate < 0 || defaultRate > 100) {
+      console.error(`Invalid default rate for sector ${sectorCode}: ${defaultRate}%`);
+      return null;
+    }
+
+    // Try to get recovery rate for this sector
+    const recoveryRate = await getRecoveryRateData(regionCode);
+
+    return {
+      sectorCode,
+      sectorName: SECTOR_NAMES[sectorCode] || sectorCode,
+      defaultRate,
+      recoveryRate: recoveryRate !== null ? recoveryRate : estimateRecoveryRate(defaultRate),
+      isRecoveryEstimated: recoveryRate === null,
+      period: "1994-2024",
+    };
+  } catch (error) {
+    console.error(`Error fetching sector data for ${sectorCode}:`, error);
+    return null;
+  }
 }
 
 async function getRegionData(region: string) {
@@ -465,44 +514,141 @@ const handler = createMcpHandler(
     // Tool 4: Sector Analysis
     server.tool(
       'get_sector_analysis',
-      'Analyze credit risk performance by economic sector',
+      'Analyze credit risk performance by economic sector (21 sectors: GICS + IFC categories)',
       {
-        sector: z.enum(['Financial Services', 'Infrastructure', 'Manufacturing', 'Services', 'Agriculture', 'Energy', 'Health & Education', 'all'])
+        sector: z.enum([
+          'all', 'overall',
+          // IFC categories
+          'non-financial', 'financial-institutions', 'banking', 'infrastructure',
+          'non-banking', 'renewables', 'services',
+          // GICS sectors
+          'financials', 'utilities', 'industrials', 'consumer-staples',
+          'consumer-discretionary', 'materials', 'others', 'communication-services',
+          'health-care', 'energy', 'real-estate', 'information-technology', 'administration'
+        ])
           .optional()
           .describe('Economic sector to analyze, or "all" for all sectors')
       },
-      async ({ sector }) => {
-        if (sector && sector !== 'all') {
-          const sectorData = mockSectorData.find(s => s.sector === sector);
-          if (!sectorData) {
+      async ({ sector = 'all' }) => {
+        // Map user-friendly names to sector codes
+        const sectorMapping: Record<string, string> = {
+          'all': '_T',
+          'overall': '_T',
+          'non-financial': 'NF',
+          'financial-institutions': 'FI',
+          'banking': 'BK',
+          'infrastructure': 'IN',
+          'non-banking': 'NB',
+          'renewables': 'R',
+          'services': 'S',
+          'financials': 'F',
+          'utilities': 'U',
+          'industrials': 'I',
+          'consumer-staples': 'CST',
+          'consumer-discretionary': 'CD',
+          'materials': 'M',
+          'others': 'O',
+          'communication-services': 'CS',
+          'health-care': 'HC',
+          'energy': 'E',
+          'real-estate': 'RE',
+          'information-technology': 'IT',
+          'administration': 'A',
+        };
+
+        const sectorCode = sectorMapping[sector] || '_T';
+
+        if (sector !== 'all' && sector !== 'overall') {
+          // Fetch real data for specific sector
+          const data = await getSectorData(sectorCode);
+
+          if (!data) {
+            // Fallback to mock data if available
+            const mockMatch = mockSectorData.find(s =>
+              s.sector.toLowerCase().includes(sector.toLowerCase())
+            );
+
+            if (mockMatch) {
+              const expectedLoss = (mockMatch.defaultRate * (100 - mockMatch.recoveryRate) / 100).toFixed(2);
+              return {
+                content: [{
+                  type: 'text',
+                  text: `# Sector Analysis: ${mockMatch.sector}\n\n**Default Rate:** ${mockMatch.defaultRate}%\n**Recovery Rate:** ${mockMatch.recoveryRate}%\n**Average Loan Size:** $${(mockMatch.avgLoanSize / 1e6).toFixed(1)}M\n**Expected Loss:** ${expectedLoss}%\n\n${mockMatch.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n*Using fallback data (API unavailable)*`
+                }]
+              };
+            }
+
             return {
               content: [{
                 type: 'text',
-                text: `Sector not found: ${sector}`
+                text: `No data available for sector: ${sector}\n\nAvailable sectors: ${Object.keys(sectorMapping).filter(k => k !== 'all' && k !== 'overall').join(', ')}`
               }]
             };
           }
 
-          const expectedLoss = (sectorData.defaultRate * (100 - sectorData.recoveryRate) / 100).toFixed(2);
+          const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
+          const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
+          const dataSource = data.isRecoveryEstimated
+            ? '*Default rate from World Bank Data360 IFC_GEM_PBD (real-time). Recovery rate estimated.*'
+            : '*Real-time data from World Bank Data360 IFC_GEM*';
+
           return {
             content: [{
               type: 'text',
-              text: `# Sector Analysis: ${sectorData.sector}\n\n**Default Rate:** ${sectorData.defaultRate}%\n**Recovery Rate:** ${sectorData.recoveryRate}%\n**Average Loan Size:** $${(sectorData.avgLoanSize / 1e6).toFixed(1)}M\n**Expected Loss:** ${expectedLoss}%\n\n${sectorData.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.`
+              text: `# Sector Analysis: ${data.sectorName}\n\n**Default Rate:** ${data.defaultRate.toFixed(2)}%\n**Recovery Rate:** ${data.recoveryRate.toFixed(2)}%${recoveryNote}\n**Expected Loss:** ${expectedLoss}%\n**Period:** ${data.period}\n\n${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n${dataSource}`
             }]
           };
         }
 
-        // Return all sectors
-        let result = `# Credit Risk by Sector\n\n`;
-        result += `| Sector | Default | Recovery | Avg Loan | Exp Loss |\n`;
-        result += `|--------|---------|----------|----------|----------|\n`;
+        // Return all sectors (top sectors with real data)
+        const topSectorCodes = ['F', 'I', 'E', 'U', 'IN', 'BK', 'NF', 'R'];
+        const sectorDataArray = [];
 
-        mockSectorData
+        for (const code of topSectorCodes) {
+          const data = await getSectorData(code);
+          if (data) {
+            sectorDataArray.push(data);
+          }
+        }
+
+        if (sectorDataArray.length === 0) {
+          // Fallback to mock data
+          let result = `# Credit Risk by Sector\n\n`;
+          result += `| Sector | Default | Recovery | Avg Loan | Exp Loss |\n`;
+          result += `|--------|---------|----------|----------|----------|\n`;
+
+          mockSectorData
+            .sort((a, b) => a.defaultRate - b.defaultRate)
+            .forEach((s) => {
+              const expectedLoss = (s.defaultRate * (100 - s.recoveryRate) / 100).toFixed(2);
+              result += `| ${s.sector} | ${s.defaultRate}% | ${s.recoveryRate}% | $${(s.avgLoanSize / 1e6).toFixed(1)}M | ${expectedLoss}% |\n`;
+            });
+
+          result += `\n*Using fallback data (API unavailable)*`;
+
+          return {
+            content: [{
+              type: 'text',
+              text: result
+            }]
+          };
+        }
+
+        // Show real data
+        let result = `# Credit Risk by Sector\n\n`;
+        result += `| Sector | Default Rate | Recovery Rate | Expected Loss |\n`;
+        result += `|--------|--------------|---------------|---------------|\n`;
+
+        sectorDataArray
           .sort((a, b) => a.defaultRate - b.defaultRate)
           .forEach((s) => {
             const expectedLoss = (s.defaultRate * (100 - s.recoveryRate) / 100).toFixed(2);
-            result += `| ${s.sector} | ${s.defaultRate}% | ${s.recoveryRate}% | $${(s.avgLoanSize / 1e6).toFixed(1)}M | ${expectedLoss}% |\n`;
+            const recoveryMark = s.isRecoveryEstimated ? '*' : '';
+            result += `| ${s.sectorName} | ${s.defaultRate.toFixed(2)}% | ${s.recoveryRate.toFixed(2)}%${recoveryMark} | ${expectedLoss}% |\n`;
           });
+
+        result += `\n*Real-time data from World Bank Data360 IFC_GEM*`;
+        result += `\n* = Recovery rate estimated`;
 
         return {
           content: [{
