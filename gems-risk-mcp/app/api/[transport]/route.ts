@@ -150,8 +150,55 @@ interface Data360Response {
   }>;
 }
 
+// Cache configuration
+interface CacheEntry {
+  data: Data360Response;
+  timestamp: number;
+}
+
+const apiCache = new Map<string, CacheEntry>();
+const CACHE_TTL = 300000; // 5 minutes in milliseconds
+
+// Generate cache key from API parameters
+function getCacheKey(params: Record<string, string>): string {
+  // Sort keys to ensure consistent cache keys
+  const sortedKeys = Object.keys(params).sort();
+  return sortedKeys.map(key => `${key}=${params[key]}`).join('&');
+}
+
+// Cleanup expired cache entries periodically
+function cleanupCache() {
+  const now = Date.now();
+  let removed = 0;
+
+  for (const [key, entry] of apiCache.entries()) {
+    if (now - entry.timestamp >= CACHE_TTL) {
+      apiCache.delete(key);
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`Cache cleanup: removed ${removed} expired entries`);
+  }
+}
+
+// Run cache cleanup every 10 minutes
+setInterval(cleanupCache, 600000);
+
 // API Client Functions
 async function fetchData360(params: Record<string, string>): Promise<Data360Response> {
+  // Check cache first
+  const cacheKey = getCacheKey(params);
+  const cached = apiCache.get(cacheKey);
+  const now = Date.now();
+
+  if (cached && (now - cached.timestamp) < CACHE_TTL) {
+    console.log(`Cache hit for: ${cacheKey}`);
+    return cached.data;
+  }
+
+  // Cache miss or expired - fetch from API
   const queryString = new URLSearchParams(params).toString();
   const url = `${DATA360_API_BASE}/data360/data?${queryString}`;
 
@@ -160,7 +207,17 @@ async function fetchData360(params: Record<string, string>): Promise<Data360Resp
     if (!response.ok) {
       throw new Error(`API request failed: ${response.status}`);
     }
-    return await response.json() as Data360Response;
+    const data = await response.json() as Data360Response;
+
+    // Store in cache
+    apiCache.set(cacheKey, {
+      data,
+      timestamp: now
+    });
+
+    console.log(`Cache miss - fetched and cached: ${cacheKey}`);
+
+    return data;
   } catch (error) {
     console.error("Error fetching from Data360 API:", error);
     throw error;
