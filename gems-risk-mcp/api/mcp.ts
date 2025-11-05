@@ -96,8 +96,17 @@ const mockSectorData = [
   { sector: "Health & Education", defaultRate: 2.9, recoveryRate: 76, avgLoanSize: 25e6 },
 ];
 
+// Data360 API Response Types
+interface Data360Response {
+  value: Array<{
+    TIME_PERIOD: string;
+    OBS_VALUE: string;
+    [key: string]: any;
+  }>;
+}
+
 // API Client Functions
-async function fetchData360(params: Record<string, string>) {
+async function fetchData360(params: Record<string, string>): Promise<Data360Response> {
   const queryString = new URLSearchParams(params).toString();
   const url = `${DATA360_API_BASE}/data360/data?${queryString}`;
 
@@ -106,7 +115,7 @@ async function fetchData360(params: Record<string, string>) {
     if (!response.ok) {
       throw new Error(`API request failed: ${response.status}`);
     }
-    return await response.json();
+    return await response.json() as Data360Response;
   } catch (error) {
     console.error("Error fetching from Data360 API:", error);
     throw error;
