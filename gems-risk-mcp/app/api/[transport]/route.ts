@@ -423,5 +423,5 @@ const handler = createMcpHandler(
   }
 );
 
-// Export as named HTTP methods for Vercel API routes
-export { handler as GET, handler as POST };
+// Export as named HTTP methods for MCP protocol (GET, POST, DELETE required)
+export { handler as GET, handler as POST, handler as DELETE };
