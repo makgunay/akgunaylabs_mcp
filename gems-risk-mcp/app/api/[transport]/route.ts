@@ -166,6 +166,64 @@ async function fetchData360(params: Record<string, string>): Promise<Data360Resp
   }
 }
 
+// Fetch real recovery rates from IFC_GEM_PBR indicator
+async function getRecoveryRateData(apiCode: string): Promise<number | null> {
+  try {
+    const recoveryParams = {
+      DATABASE_ID: IFC_GEM_DATASET,
+      INDICATOR: "IFC_GEM_PBR",  // Public recovery rates indicator
+      METRIC: "ARR",              // Average Recovery Rate (percentage)
+      REF_AREA: apiCode,
+      SECTOR: "_T",               // Overall (all sectors)
+      PROJECT_TYPE: "_T",         // All project types
+      SENIORITY: "_T",            // All seniority levels
+      TIME_PERIOD: "2024",
+    };
+
+    const recoveryData = await fetchData360(recoveryParams);
+
+    if (!recoveryData.value || recoveryData.value.length === 0) {
+      console.warn(`No recovery rate data available for region ${apiCode}`);
+      return null;
+    }
+
+    // Get most recent recovery rate
+    const latestRecovery = recoveryData.value
+      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+    // Validate we're getting percentage data
+    if (latestRecovery) {
+      if (latestRecovery.UNIT_MEASURE !== 'PT') {
+        console.error(`Expected percentage unit (PT) for recovery rate, got ${latestRecovery.UNIT_MEASURE}`);
+      }
+      if (latestRecovery.METRIC !== 'ARR') {
+        console.error(`Expected METRIC='ARR' for recovery rate, got METRIC='${latestRecovery.METRIC}'`);
+      }
+    }
+
+    const recoveryRate = latestRecovery ? parseFloat(latestRecovery.OBS_VALUE) : null;
+
+    // Sanity check: recovery rates should be 0-100%
+    if (recoveryRate !== null && (recoveryRate < 0 || recoveryRate > 100)) {
+      console.error(`Invalid recovery rate: ${recoveryRate}% for region ${apiCode}`);
+      return null;
+    }
+
+    return recoveryRate;
+  } catch (error) {
+    console.error(`Error fetching recovery rate data for region ${apiCode}:`, error);
+    return null;
+  }
+}
+
+// Estimate recovery rate using correlation with default rate (fallback method)
+function estimateRecoveryRate(defaultRate: number): number {
+  const globalAvgRecovery = 73;
+  const globalAvgDefault = 3.5;
+  const recoveryAdjustment = (globalAvgDefault - defaultRate) * 1.5;
+  return Math.max(60, Math.min(80, globalAvgRecovery + recoveryAdjustment));
+}
+
 async function getRegionData(region: string) {
   const apiCode = REGION_NAMES[region.toLowerCase()];
   if (!apiCode) {
@@ -243,11 +301,15 @@ async function getRegionData(region: string) {
       .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
     const totalVolume = latestVolume ? parseFloat(latestVolume.OBS_VALUE) * 1e6 : 0;
 
-    // Estimate recovery rate
-    const globalAvgRecovery = 73;
-    const globalAvgDefault = 3.5;
-    const recoveryAdjustment = (globalAvgDefault - defaultRate) * 1.5;
-    const recoveryRate = Math.max(60, Math.min(80, globalAvgRecovery + recoveryAdjustment));
+    // Fetch real recovery rate from API (IFC_GEM_PBR indicator)
+    // Falls back to estimation if API data not available
+    const realRecoveryRate = await getRecoveryRateData(apiCode);
+    const recoveryRate = realRecoveryRate !== null
+      ? realRecoveryRate
+      : estimateRecoveryRate(defaultRate);
+
+    // Track whether we're using real or estimated data
+    const isRecoveryEstimated = realRecoveryRate === null;
 
     return {
       region: REGION_DISPLAY_NAMES[apiCode],
@@ -256,6 +318,7 @@ async function getRegionData(region: string) {
       numberOfLoans: Math.round(numberOfLoans),
       totalVolume: Math.round(totalVolume),
       period: "1994-2024",
+      isRecoveryEstimated,  // Flag to indicate data source
     };
   } catch (error) {
     console.error(`Error fetching data for region ${region}:`, error);
@@ -335,10 +398,15 @@ const handler = createMcpHandler(
           };
         }
 
+        // Determine data source message
+        const dataSource = data.isRecoveryEstimated
+          ? '*Recovery rate estimated based on default rate correlation (API data not available)*'
+          : '*Recovery rate from World Bank Data360 IFC_GEM_PBR (real-time)*';
+
         return {
           content: [{
             type: 'text',
-            text: `# Recovery Rates for ${data.region}\n\n**Recovery Rate:** ${data.recoveryRate}%\n\n**Period:** ${data.period}\n\n**Analysis:** When loans default, lenders recover ${data.recoveryRate}% of loan value.\n\n*Estimated based on default rate correlation (baseline: 73%)*`
+            text: `# Recovery Rates for ${data.region}\n\n**Recovery Rate:** ${data.recoveryRate}%\n\n**Period:** ${data.period}\n\n**Analysis:** When loans default, lenders recover ${data.recoveryRate}% of loan value.\n\n${dataSource}`
           }]
         };
       }
@@ -376,10 +444,19 @@ const handler = createMcpHandler(
         }
 
         const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
+
+        // Determine data source note
+        const recoveryNote = data.isRecoveryEstimated
+          ? ' (estimated)'
+          : ' (real-time API)';
+        const dataNote = data.isRecoveryEstimated
+          ? '*Default rate from World Bank Data360 (real-time). Recovery rate estimated based on default rate correlation.*'
+          : '*Real-time data from World Bank Data360 IFC_GEM (default rates: IFC_GEM_PBD, recovery rates: IFC_GEM_PBR)*';
+
         return {
           content: [{
             type: 'text',
-            text: `# Credit Risk Profile: ${data.region}\n\n## Key Metrics\n\n**Default Rate:** ${data.defaultRate}%\n**Recovery Rate:** ${data.recoveryRate}%\n**Number of Loans:** ${data.numberOfLoans.toLocaleString()}\n**Total Volume:** $${(data.totalVolume / 1e9).toFixed(1)}B USD\n**Period:** ${data.period}\n\n## Risk Assessment\n\n**Expected Loss:** ${expectedLoss}%\n\nThe expected loss represents the percentage of loan value expected to be lost after accounting for defaults and recoveries.\n\n*Real-time data from World Bank Data360*`
+            text: `# Credit Risk Profile: ${data.region}\n\n## Key Metrics\n\n**Default Rate:** ${data.defaultRate}%\n**Recovery Rate:** ${data.recoveryRate}%${recoveryNote}\n**Number of Loans:** ${data.numberOfLoans.toLocaleString()}\n**Total Volume:** $${(data.totalVolume / 1e9).toFixed(1)}B USD\n**Period:** ${data.period}\n\n## Risk Assessment\n\n**Expected Loss:** ${expectedLoss}%\n\nThe expected loss represents the percentage of loan value expected to be lost after accounting for defaults and recoveries.\n\n${dataNote}`
           }]
         };
       }
