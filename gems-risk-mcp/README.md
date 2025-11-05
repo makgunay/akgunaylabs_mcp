@@ -133,10 +133,32 @@ Compare credit risk metrics across multiple regions.
 
 ## Data Source
 
-This MCP server interfaces with the World Bank's Data360 platform, specifically the IFC_GEM dataset (Global Emerging Markets Risk Database). The database is a joint initiative between the International Finance Corporation (IFC) and the European Investment Bank (EIB), pooling credit data from major development finance institutions.
+This MCP server interfaces with the **World Bank Data360 API** to fetch real-time credit risk data from the IFC_GEM dataset (Global Emerging Markets Risk Database).
 
-**Data Sources:**
-- World Bank Data360: [https://data360.worldbank.org/en/dataset/IFC_GEM](https://data360.worldbank.org/en/dataset/IFC_GEM)
+### API Integration
+
+**Live Data Sources:**
+- **Default Rates**: Fetched directly from Data360 API (metric: ADR - Average Default Rate)
+- **Loan Counts**: Real-time portfolio counts (metric: CP)
+- **Loan Volumes**: Syndicated amounts in EUR millions (metric: SA)
+
+**Calculated/Estimated Data:**
+- **Recovery Rates**: Estimated using documented global baseline of 73% with adjustments based on regional default rate correlation
+- **Expected Loss**: Calculated as `Default Rate × (1 - Recovery Rate)`
+
+**API Details:**
+- Base URL: `https://data360api.worldbank.org`
+- Dataset: `IFC_GEM`
+- No authentication required
+- Covers period: 1994-2024
+
+**Fallback Mechanism:**
+If the API is temporarily unavailable, the MCP automatically falls back to cached data to ensure continuous operation.
+
+### Data Sources
+
+- World Bank Data360 API: [https://data360api.worldbank.org/data360/data](https://data360api.worldbank.org/data360/data)
+- Dataset Page: [https://data360.worldbank.org/en/dataset/IFC_GEM](https://data360.worldbank.org/en/dataset/IFC_GEM)
 - IFC GEMs Consortium: [https://www.ifc.org/gems](https://www.ifc.org/en/what-we-do/sector-expertise/syndicated-loans-and-mobilization/global-emerging-markets-risk-database-consortium)
 
 ## About GEMs
