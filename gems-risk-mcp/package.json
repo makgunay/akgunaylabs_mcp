@@ -1,23 +1,26 @@
 {
   "name": "gems-risk-mcp-vercel",
   "version": "1.0.0",
-  "description": "GEMs Risk MCP Server deployed on Vercel",
-  "type": "module",
+  "description": "GEMs Risk MCP Server deployed on Vercel with Next.js",
   "scripts": {
-    "dev": "vercel dev",
-    "build": "tsc",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "deploy": "vercel --prod"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "mcp-handler": "latest",
+    "next": "^14.2.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@vercel/node": "^3.0.0",
-    "typescript": "^5.3.0",
-    "vercel": "^34.0.0"
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.3.0"
   },
   "engines": {
     "node": "20.x"
