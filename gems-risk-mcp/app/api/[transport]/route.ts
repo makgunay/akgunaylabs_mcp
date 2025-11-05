@@ -129,22 +129,36 @@ async function getRegionData(region: string) {
   }
 
   try {
-    // Fetch default rate
+    // Fetch default rate - using proper World Bank Data360 API parameters
+    // INDICATOR: IFC_GEM_PBD = Average public default rates (percentage)
+    // METRIC: ADR = Average Default Rate (not CP which is counterpart count!)
     const defaultParams = {
       DATABASE_ID: IFC_GEM_DATASET,
-      "$filter": `METRIC eq 'ADR' and REF_AREA eq '${apiCode}'`,
+      INDICATOR: "IFC_GEM_PBD",
+      METRIC: "ADR",
+      REF_AREA: apiCode,
+      SECTOR: "_T",  // Overall (all sectors)
+      TIME_PERIOD: "2024",
     };
 
-    // Fetch loan counts
+    // Fetch loan counts - using CP (Counterparts) metric
     const countParams = {
       DATABASE_ID: IFC_GEM_DATASET,
-      "$filter": `METRIC eq 'CP' and REF_AREA eq '${apiCode}'`,
+      INDICATOR: "IFC_GEM_PRD_H",  // Historical private default rates dataset
+      METRIC: "CP",  // CP = Counterparts (count of entities)
+      REF_AREA: apiCode,
+      SECTOR: "_T",
+      TIME_PERIOD: "2024",
     };
 
-    // Fetch loan volumes
+    // Fetch loan volumes - using SA (Signed Amount) metric
     const volumeParams = {
       DATABASE_ID: IFC_GEM_DATASET,
-      "$filter": `METRIC eq 'SA' and REF_AREA eq '${apiCode}'`,
+      INDICATOR: "IFC_GEM_PRD_H",
+      METRIC: "SA",  // SA = Signed Amount
+      REF_AREA: apiCode,
+      SECTOR: "_T",
+      TIME_PERIOD: "2024",
     };
 
     const [defaultData, countData, volumeData] = await Promise.all([
@@ -156,7 +170,24 @@ async function getRegionData(region: string) {
     // Get most recent default rate
     const latestDefault = defaultData.value
       .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+    // Validate we're getting percentage data, not count data
+    if (latestDefault) {
+      if (latestDefault.UNIT_MEASURE !== 'PT') {
+        console.error(`Expected percentage unit (PT), got ${latestDefault.UNIT_MEASURE}. Check METRIC='ADR' is being used.`);
+      }
+      if (latestDefault.METRIC !== 'ADR') {
+        console.error(`Expected METRIC='ADR', got METRIC='${latestDefault.METRIC}'. Likely querying counterparts (CP) instead.`);
+      }
+    }
+
     const defaultRate = latestDefault ? parseFloat(latestDefault.OBS_VALUE) : 0;
+
+    // Sanity check: default rates should be 0-100%
+    if (defaultRate > 100) {
+      console.error(`Invalid default rate: ${defaultRate}% for region ${apiCode}. This likely means wrong METRIC is being used.`);
+      return null;
+    }
 
     // Get most recent count
     const latestCount = countData.value
