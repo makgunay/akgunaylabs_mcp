@@ -508,6 +508,68 @@ async function getSectorData(sectorCode: string, regionCode: string = "_T", proj
   };
 }
 
+// Fetch project type data from IFC_GEM_PBD indicator with comprehensive error handling
+async function getProjectTypeData(projectTypeCode: string, regionCode: string = "_T", sectorCode: string = "_T"): Promise<SectorDataResult | { error: DataError }> {
+  const params = {
+    DATABASE_ID: IFC_GEM_DATASET,
+    INDICATOR: "IFC_GEM_PBD",  // Public default rates
+    METRIC: "ADR",              // Average Default Rate
+    REF_AREA: regionCode,
+    SECTOR: sectorCode,
+    PROJECT_TYPE: projectTypeCode,
+    TIME_PERIOD: "2024",
+  };
+
+  const result = await fetchData360(params);
+
+  if (!result.success) {
+    return { error: result.error! };
+  }
+
+  // Get most recent default rate
+  const latestData = result.data!.value
+    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+  const defaultRate = parseFloat(latestData.OBS_VALUE);
+
+  if (defaultRate < 0 || defaultRate > 100) {
+    return {
+      error: {
+        type: DataErrorType.INVALID_DATA,
+        message: `Invalid default rate for project type ${projectTypeCode}: ${defaultRate}%`,
+        details: 'Default rate must be between 0-100%'
+      }
+    };
+  }
+
+  // Try to get recovery rate for this region
+  const recoveryResult = await getRecoveryRateData(regionCode);
+
+  let recoveryRate: number;
+  let isRecoveryEstimated: boolean;
+  let recoveryError: DataError | undefined;
+
+  if (recoveryResult.success) {
+    recoveryRate = recoveryResult.data!;
+    isRecoveryEstimated = false;
+    recoveryError = recoveryResult.error;
+  } else {
+    recoveryRate = estimateRecoveryRate(defaultRate);
+    isRecoveryEstimated = true;
+    recoveryError = recoveryResult.error;
+  }
+
+  return {
+    sectorCode: projectTypeCode,  // Reusing structure
+    sectorName: PROJECT_TYPE_NAMES[projectTypeCode] || projectTypeCode,
+    defaultRate,
+    recoveryRate,
+    isRecoveryEstimated,
+    recoveryError,
+    period: "1994-2024",
+  };
+}
+
 async function getRegionData(region: string): Promise<RegionDataResult | { error: DataError } | null> {
   const apiCode = REGION_NAMES[region.toLowerCase()];
   if (!apiCode) {
@@ -1116,6 +1178,132 @@ const handler = createMcpHandler(
 
           result += `\n*Using cached data*`;
         }
+
+        return {
+          content: [{
+            type: 'text',
+            text: result
+          }]
+        };
+      }
+    );
+
+    // Tool 6: Project Type Analysis
+    server.tool(
+      'get_project_type_analysis',
+      'Analyze credit risk by project financing type (Corporate Finance, Project Finance, etc.)',
+      {
+        projectType: z.enum([
+          'all', 'overall',
+          'corporate-finance', 'project-finance', 'financial-institutions',
+          'structured-finance', 'mixed', 'other'
+        ])
+          .optional()
+          .describe('Project financing type to analyze, or "all" for comparison')
+      },
+      async ({ projectType = 'all' }) => {
+        // Map user-friendly names to project type codes
+        const projectTypeMapping: Record<string, string> = {
+          'all': '_T',
+          'overall': '_T',
+          'corporate-finance': 'CF',
+          'project-finance': 'PF',
+          'financial-institutions': 'FI',
+          'structured-finance': 'SF',
+          'mixed': 'MX',
+          'other': 'O',
+        };
+
+        const projectTypeCode = projectTypeMapping[projectType] || '_T';
+
+        if (projectType !== 'all' && projectType !== 'overall') {
+          // Fetch real data for specific project type
+          const result = await getProjectTypeData(projectTypeCode);
+
+          if (!result || 'error' in result) {
+            const error = result && 'error' in result ? result.error : undefined;
+
+            if (error) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `⚠️ **Error retrieving project type data**\n\n${error.message}\n\n${error.suggestedAction || 'Try broader filters.'}`
+                }]
+              };
+            }
+
+            return {
+              content: [{
+                type: 'text',
+                text: `No data available for project type: ${projectType}`
+              }]
+            };
+          }
+
+          // At this point TypeScript knows result is SectorDataResult
+          const data = result as SectorDataResult;
+
+          const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
+          const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
+          const dataSource = data.isRecoveryEstimated
+            ? '*Default rate from World Bank Data360 IFC_GEM_PBD (real-time). Recovery rate estimated.*'
+            : '*Real-time data from World Bank Data360 IFC_GEM*';
+
+          return {
+            content: [{
+              type: 'text',
+              text: `# Project Type Analysis: ${data.sectorName}\n\n` +
+                    `**Default Rate:** ${data.defaultRate.toFixed(2)}%\n` +
+                    `**Recovery Rate:** ${data.recoveryRate.toFixed(2)}%${recoveryNote}\n` +
+                    `**Expected Loss:** ${expectedLoss}%\n` +
+                    `**Period:** ${data.period}\n\n` +
+                    `${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n` +
+                    `${dataSource}`
+            }]
+          };
+        }
+
+        // Return all project types comparison
+        const projectTypeCodes = ['CF', 'PF', 'FI', 'SF', 'MX', 'O'];
+        const projectTypeDataArray: SectorDataResult[] = [];
+
+        for (const code of projectTypeCodes) {
+          const result = await getProjectTypeData(code);
+          if (result && !('error' in result)) {
+            projectTypeDataArray.push(result as SectorDataResult);
+          }
+        }
+
+        if (projectTypeDataArray.length === 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: `⚠️ **No project type data available**\n\nUnable to retrieve data from World Bank Data360 API.`
+            }]
+          };
+        }
+
+        // Show comparison table
+        let result = `# Credit Risk by Project Type\n\n`;
+        result += `| Project Type | Default Rate | Recovery Rate | Expected Loss |\n`;
+        result += `|--------------|--------------|---------------|---------------|\n`;
+
+        projectTypeDataArray
+          .sort((a, b) => a.defaultRate - b.defaultRate)
+          .forEach((p) => {
+            const expectedLoss = (p.defaultRate * (100 - p.recoveryRate) / 100).toFixed(2);
+            const recoveryMark = p.isRecoveryEstimated ? '*' : '';
+            result += `| ${p.sectorName} | ${p.defaultRate.toFixed(2)}% | ${p.recoveryRate.toFixed(2)}%${recoveryMark} | ${expectedLoss}% |\n`;
+          });
+
+        result += `\n**Key Insights:**\n`;
+        const lowest = projectTypeDataArray.reduce((min, p) => p.defaultRate < min.defaultRate ? p : min);
+        const highest = projectTypeDataArray.reduce((max, p) => p.defaultRate > max.defaultRate ? p : max);
+        result += `- Lowest risk: ${lowest.sectorName} (${lowest.defaultRate.toFixed(2)}%)\n`;
+        result += `- Highest risk: ${highest.sectorName} (${highest.defaultRate.toFixed(2)}%)\n`;
+        result += `- Risk spread: ${(highest.defaultRate - lowest.defaultRate).toFixed(2)}% difference\n\n`;
+        result += `*Real-time data from World Bank Data360 IFC_GEM*\n`;
+        result += `* = Recovery rate estimated`;
 
         return {
           content: [{
