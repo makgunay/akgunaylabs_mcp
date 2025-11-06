@@ -563,6 +563,51 @@ async function getTimeSeriesData(
   return dataPoints;
 }
 
+// Fetch seniority-specific recovery rate data
+async function getSeniorityRecoveryData(seniorityCode: string, regionCode: string = "_T"): Promise<DataResult<number>> {
+  const recoveryParams = {
+    DATABASE_ID: IFC_GEM_DATASET,
+    INDICATOR: "IFC_GEM_PBR",  // Public recovery rates indicator
+    METRIC: "ARR",              // Average Recovery Rate (percentage)
+    REF_AREA: regionCode,
+    SECTOR: "_T",
+    PROJECT_TYPE: "_T",
+    SENIORITY: seniorityCode,  // SS or SU
+    TIME_PERIOD: "2024",
+  };
+
+  const result = await fetchData360(recoveryParams);
+
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error
+    };
+  }
+
+  const latestRecovery = result.data!.value
+    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
+
+  const recoveryRate = parseFloat(latestRecovery.OBS_VALUE);
+
+  // Validate range
+  if (recoveryRate < 0 || recoveryRate > 100) {
+    return {
+      success: false,
+      error: {
+        type: DataErrorType.INVALID_DATA,
+        message: `Invalid recovery rate: ${recoveryRate}%`,
+        details: 'Recovery rate must be between 0-100%'
+      }
+    };
+  }
+
+  return {
+    success: true,
+    data: recoveryRate
+  };
+}
+
 // Fetch project type data from IFC_GEM_PBD indicator with comprehensive error handling
 async function getProjectTypeData(projectTypeCode: string, regionCode: string = "_T", sectorCode: string = "_T"): Promise<SectorDataResult | { error: DataError }> {
   const params = {
@@ -1435,6 +1480,83 @@ const handler = createMcpHandler(
         });
 
         resultText += `\n*Real-time data from World Bank Data360 IFC_GEM*`;
+
+        return {
+          content: [{
+            type: 'text',
+            text: resultText
+          }]
+        };
+      }
+    );
+
+    // Tool 8: Seniority Analysis
+    server.tool(
+      'get_seniority_analysis',
+      'Compare recovery rates by debt seniority (Senior Secured vs Senior Unsecured)',
+      {
+        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
+          .optional()
+          .describe('Region to analyze (defaults to global)')
+      },
+      async ({ region = 'global' }) => {
+        const regionCode = REGION_NAMES[region];
+        const regionName = REGION_DISPLAY_NAMES[regionCode];
+
+        // Fetch recovery rates for both seniority levels
+        const [ssResult, suResult] = await Promise.all([
+          getSeniorityRecoveryData('SS', regionCode),
+          getSeniorityRecoveryData('SU', regionCode)
+        ]);
+
+        // Handle errors
+        if (!ssResult.success || !suResult.success) {
+          const error = !ssResult.success ? ssResult.error : suResult.error;
+
+          return {
+            content: [{
+              type: 'text',
+              text: `⚠️ **Error retrieving seniority data**\n\n` +
+                    `${error!.message}\n\n` +
+                    `${error!.suggestedAction || ''}\n\n` +
+                    `**Note:** Seniority data may only be available at the global level.`
+            }]
+          };
+        }
+
+        const ssRate = ssResult.data!;
+        const suRate = suResult.data!;
+        const securityPremium = ssRate - suRate;
+
+        // Build result
+        let resultText = `# Debt Seniority Analysis: ${regionName}\n\n`;
+
+        resultText += `## Recovery Rates by Seniority\n\n`;
+        resultText += `| Seniority Level | Recovery Rate | Risk Level |\n`;
+        resultText += `|-----------------|---------------|------------|\n`;
+        resultText += `| **Senior Secured (SS)** | ${ssRate.toFixed(2)}% | Lower Risk |\n`;
+        resultText += `| **Senior Unsecured (SU)** | ${suRate.toFixed(2)}% | Higher Risk |\n\n`;
+
+        resultText += `## Key Metrics\n\n`;
+        resultText += `- **Security Premium:** ${securityPremium.toFixed(2)}%\n`;
+        resultText += `- **Relative Advantage:** ${((securityPremium / suRate) * 100).toFixed(1)}% better recovery for secured debt\n\n`;
+
+        resultText += `## Analysis\n\n`;
+        if (securityPremium > 10) {
+          resultText += `**Significant security premium detected.** Collateralized loans recover ${securityPremium.toFixed(2)}% more than uncollateralized loans, highlighting the importance of security in credit structuring.\n\n`;
+        } else if (securityPremium > 5) {
+          resultText += `**Moderate security premium.** Collateral provides a ${securityPremium.toFixed(2)}% recovery advantage, demonstrating tangible risk mitigation benefits.\n\n`;
+        } else {
+          resultText += `**Limited security premium.** The ${securityPremium.toFixed(2)}% difference suggests other factors may be more significant in determining recovery rates.\n\n`;
+        }
+
+        resultText += `**Implications for Lending:**\n`;
+        resultText += `- Senior secured loans offer ${ssRate.toFixed(2)}% average recovery on default\n`;
+        resultText += `- Senior unsecured loans offer ${suRate.toFixed(2)}% average recovery on default\n`;
+        resultText += `- Security reduces expected loss by ${securityPremium.toFixed(2)} percentage points\n\n`;
+
+        resultText += `*Real-time data from World Bank Data360 IFC_GEM_PBR*\n`;
+        resultText += `*Period: 1994-2024*`;
 
         return {
           content: [{
