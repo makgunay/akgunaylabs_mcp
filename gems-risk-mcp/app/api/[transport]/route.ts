@@ -1566,6 +1566,163 @@ const handler = createMcpHandler(
         };
       }
     );
+
+    // Tool 9: Multi-Dimensional Query
+    server.tool(
+      'query_multidimensional',
+      'Query credit risk data with multiple filters (region + sector + project type)',
+      {
+        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
+          .optional()
+          .describe('Region filter (defaults to global)'),
+        sector: z.enum([
+          'all', 'overall',
+          'non-financial', 'financial-institutions', 'banking', 'infrastructure',
+          'non-banking', 'renewables', 'services',
+          'financials', 'utilities', 'industrials', 'consumer-staples',
+          'consumer-discretionary', 'materials', 'others', 'communication-services',
+          'health-care', 'energy', 'real-estate', 'information-technology', 'administration'
+        ])
+          .optional()
+          .describe('Sector filter (defaults to all sectors)'),
+        projectType: z.enum([
+          'all', 'overall',
+          'corporate-finance', 'project-finance', 'financial-institutions',
+          'structured-finance', 'mixed', 'other'
+        ])
+          .optional()
+          .describe('Project type filter (defaults to all project types)')
+      },
+      async ({ region = 'global', sector = 'all', projectType = 'all' }) => {
+        // Map user-friendly names to codes
+        const regionCode = REGION_NAMES[region];
+        const regionName = REGION_DISPLAY_NAMES[regionCode];
+
+        const sectorMapping: Record<string, string> = {
+          'all': '_T', 'overall': '_T',
+          'non-financial': 'NF', 'financial-institutions': 'FI', 'banking': 'BK',
+          'infrastructure': 'IN', 'non-banking': 'NB', 'renewables': 'R', 'services': 'S',
+          'financials': 'F', 'utilities': 'U', 'industrials': 'I',
+          'consumer-staples': 'CST', 'consumer-discretionary': 'CD', 'materials': 'M',
+          'others': 'O', 'communication-services': 'CS', 'health-care': 'HC',
+          'energy': 'E', 'real-estate': 'RE', 'information-technology': 'IT', 'administration': 'A',
+        };
+
+        const projectTypeMapping: Record<string, string> = {
+          'all': '_T', 'overall': '_T',
+          'corporate-finance': 'CF', 'project-finance': 'PF',
+          'financial-institutions': 'FI', 'structured-finance': 'SF',
+          'mixed': 'MX', 'other': 'O',
+        };
+
+        const sectorCode = sectorMapping[sector] || '_T';
+        const sectorName = SECTOR_NAMES[sectorCode] || sectorCode;
+        const projectTypeCode = projectTypeMapping[projectType] || '_T';
+        const projectTypeName = PROJECT_TYPE_NAMES[projectTypeCode] || projectTypeCode;
+
+        // Fetch data with all filters
+        const params = {
+          DATABASE_ID: IFC_GEM_DATASET,
+          INDICATOR: "IFC_GEM_PBD",
+          METRIC: "ADR",
+          REF_AREA: regionCode,
+          SECTOR: sectorCode,
+          PROJECT_TYPE: projectTypeCode,
+          TIME_PERIOD: "2024",
+        };
+
+        const result = await fetchData360(params);
+
+        if (!result.success) {
+          const error = result.error!;
+          return {
+            content: [{
+              type: 'text',
+              text: `⚠️ **Error retrieving multi-dimensional data**\n\n` +
+                    `${error.message}\n\n` +
+                    `${error.suggestedAction || ''}\n\n` +
+                    `**Query Parameters:**\n` +
+                    `- Region: ${regionName}\n` +
+                    `- Sector: ${sectorName}\n` +
+                    `- Project Type: ${projectTypeName}`
+            }]
+          };
+        }
+
+        if (result.data!.value.length === 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: `ℹ️ **No data available for this combination**\n\n` +
+                    `**Filters Applied:**\n` +
+                    `- Region: ${regionName}\n` +
+                    `- Sector: ${sectorName}\n` +
+                    `- Project Type: ${projectTypeName}\n\n` +
+                    `**Suggestions:**\n` +
+                    `- Try broader filters (e.g., all sectors or all project types)\n` +
+                    `- Use global region instead of specific region\n` +
+                    `- This combination may have insufficient sample size`
+            }]
+          };
+        }
+
+        const latestData = result.data!.value[0];
+        const defaultRate = parseFloat(latestData.OBS_VALUE);
+
+        // Get recovery rate for this region
+        const recoveryResult = await getRecoveryRateData(regionCode);
+        const recoveryRate = recoveryResult.success ? recoveryResult.data! : estimateRecoveryRate(defaultRate);
+        const isRecoveryEstimated = !recoveryResult.success;
+
+        const expectedLoss = (defaultRate * (100 - recoveryRate) / 100).toFixed(2);
+
+        // Build result
+        let resultText = `# Multi-Dimensional Credit Risk Analysis\n\n`;
+
+        resultText += `## Query Parameters\n\n`;
+        resultText += `- **Region:** ${regionName}\n`;
+        resultText += `- **Sector:** ${sectorName}\n`;
+        resultText += `- **Project Type:** ${projectTypeName}\n\n`;
+
+        resultText += `## Risk Metrics\n\n`;
+        resultText += `| Metric | Value |\n`;
+        resultText += `|--------|-------|\n`;
+        resultText += `| **Default Rate** | ${defaultRate.toFixed(2)}% |\n`;
+        resultText += `| **Recovery Rate** | ${recoveryRate.toFixed(2)}%${isRecoveryEstimated ? ' (estimated)' : ''} |\n`;
+        resultText += `| **Expected Loss** | ${expectedLoss}% |\n\n`;
+
+        resultText += `## Risk Assessment\n\n`;
+        const globalAvg = 3.5;
+        const comparison = defaultRate < globalAvg ? 'below' : defaultRate > globalAvg ? 'above' : 'at';
+        const diff = Math.abs(defaultRate - globalAvg).toFixed(2);
+
+        resultText += `Default rate is **${comparison} global average** (3.5%) by ${diff} percentage points.\n\n`;
+
+        if (defaultRate < 2.5) {
+          resultText += `**Low Risk:** This combination shows significantly lower default risk.\n\n`;
+        } else if (defaultRate < 3.5) {
+          resultText += `**Below Average Risk:** This combination performs better than the global average.\n\n`;
+        } else if (defaultRate < 4.5) {
+          resultText += `**Above Average Risk:** This combination shows elevated default risk.\n\n`;
+        } else {
+          resultText += `**High Risk:** This combination shows significantly higher default risk.\n\n`;
+        }
+
+        resultText += `**Sample Size Note:** More specific filters may have smaller sample sizes and higher variance.\n\n`;
+
+        resultText += `*Real-time data from World Bank Data360 IFC_GEM*\n`;
+        if (isRecoveryEstimated) {
+          resultText += `*Recovery rate approximated using statistical correlation*`;
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: resultText
+          }]
+        };
+      }
+    );
   },
   undefined,
   { basePath: "/api" }
