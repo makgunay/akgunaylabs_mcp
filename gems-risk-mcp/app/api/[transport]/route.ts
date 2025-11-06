@@ -73,6 +73,35 @@ const SENIORITY_NAMES: Record<string, string> = {
   "SU": "Senior Unsecured",
 };
 
+// Data source types
+type DataSource = 'public' | 'private';
+
+// Indicator mapping for public vs private data
+const INDICATOR_MAP: Record<DataSource, { default: string; recovery: string }> = {
+  public: {
+    default: "IFC_GEM_PBD",   // Public default rates
+    recovery: "IFC_GEM_PBR"   // Public recovery rates
+  },
+  private: {
+    default: "IFC_GEM_PRD",   // Private default rates
+    recovery: "IFC_GEM_PRR"   // Private recovery rates
+  }
+};
+
+// Data source characteristics for attribution
+const DATA_SOURCE_INFO: Record<DataSource, { label: string; description: string; sampleSize: string }> = {
+  public: {
+    label: "PUBLIC dataset (IFC_GEM_PBD/PBR)",
+    description: "Publicly disclosed rates from reported defaults",
+    sampleSize: "~619 default observations, ~172 recovery observations"
+  },
+  private: {
+    label: "PRIVATE dataset (IFC_GEM_PRD/PRR)",
+    description: "IFC internal experience data (more conservative)",
+    sampleSize: "~2,853 default observations, ~1,269 recovery observations (4-7x more data)"
+  }
+};
+
 // Mock data for fallback
 const mockCreditData: Record<string, any> = {
   global: {
@@ -237,6 +266,70 @@ function cleanupCache() {
 // Run cache cleanup every 10 minutes
 setInterval(cleanupCache, 600000);
 
+// Smart prompt interpretation for data source selection
+function interpretDataSource(promptText?: string, explicitSource?: DataSource): DataSource {
+  // If explicit source provided, use it
+  if (explicitSource) {
+    return explicitSource;
+  }
+
+  // If no prompt text, default to public for backward compatibility
+  if (!promptText) {
+    return 'public';
+  }
+
+  const lowerPrompt = promptText.toLowerCase();
+
+  // Trigger words for PRIVATE data (PRD/PRR)
+  const privateTriggers = [
+    'private sector',
+    'private data',
+    'internal data',
+    'actual recoveries',
+    'ifc experience',
+    'conservative estimate',
+    'ifc internal',
+    'prd',
+    'prr'
+  ];
+
+  // Trigger words for PUBLIC data (PBD/PBR)
+  const publicTriggers = [
+    'public data',
+    'publicly reported',
+    'disclosed data',
+    'market benchmark',
+    'pbd',
+    'pbr'
+  ];
+
+  // Check for private triggers
+  for (const trigger of privateTriggers) {
+    if (lowerPrompt.includes(trigger)) {
+      return 'private';
+    }
+  }
+
+  // Check for public triggers
+  for (const trigger of publicTriggers) {
+    if (lowerPrompt.includes(trigger)) {
+      return 'public';
+    }
+  }
+
+  // Default to public for backward compatibility
+  return 'public';
+}
+
+// Generate data source attribution text
+function getDataSourceAttribution(dataSource: DataSource): string {
+  const info = DATA_SOURCE_INFO[dataSource];
+  const alternative: DataSource = dataSource === 'public' ? 'private' : 'public';
+  const altInfo = DATA_SOURCE_INFO[alternative];
+
+  return `*Data Source: ${info.label}*\n*Characteristics: ${info.description}, ${info.sampleSize}*\n*Alternative: ${altInfo.label} available (use data_source="${alternative}")*`;
+}
+
 // API Client Functions with comprehensive error handling
 async function fetchData360(
   params: Record<string, string>,
@@ -368,10 +461,10 @@ async function fetchData360(
 }
 
 // Fetch real recovery rates from IFC_GEM_PBR indicator with comprehensive error handling
-async function getRecoveryRateData(apiCode: string): Promise<DataResult<number>> {
+async function getRecoveryRateData(apiCode: string, dataSource: DataSource = 'public'): Promise<DataResult<number>> {
   const recoveryParams = {
     DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: "IFC_GEM_PBR",  // Public recovery rates indicator
+    INDICATOR: INDICATOR_MAP[dataSource].recovery,  // Use appropriate recovery indicator based on data source
     METRIC: "ARR",              // Average Recovery Rate (percentage)
     REF_AREA: apiCode,
     SECTOR: "_T",               // Overall (all sectors)
@@ -447,10 +540,10 @@ function estimateRecoveryRate(defaultRate: number): number {
 }
 
 // Fetch real sector data from IFC_GEM_PBD indicator with comprehensive error handling
-async function getSectorData(sectorCode: string, regionCode: string = "_T", projectTypeCode: string = "_T"): Promise<SectorDataResult | { error: DataError }> {
+async function getSectorData(sectorCode: string, regionCode: string = "_T", projectTypeCode: string = "_T", dataSource: DataSource = 'public'): Promise<SectorDataResult | { error: DataError }> {
   const sectorParams = {
     DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: "IFC_GEM_PBD",  // Public default rates
+    INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
     METRIC: "ADR",              // Average Default Rate
     REF_AREA: regionCode,
     SECTOR: sectorCode,
@@ -481,7 +574,7 @@ async function getSectorData(sectorCode: string, regionCode: string = "_T", proj
   }
 
   // Try to get recovery rate for this sector
-  const recoveryResult = await getRecoveryRateData(regionCode);
+  const recoveryResult = await getRecoveryRateData(regionCode, dataSource);
 
   let recoveryRate: number;
   let isRecoveryEstimated: boolean;
@@ -520,14 +613,15 @@ async function getTimeSeriesData(
   sectorCode: string = "_T",
   projectTypeCode: string = "_T",
   startYear: number = 2014,
-  endYear: number = 2024
+  endYear: number = 2024,
+  dataSource: DataSource = 'public'
 ): Promise<TimeSeriesDataPoint[] | { error: DataError }> {
   const dataPoints: TimeSeriesDataPoint[] = [];
 
   for (let year = startYear; year <= endYear; year++) {
     const params = {
       DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: "IFC_GEM_PBD",
+      INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
       METRIC: "ADR",
       REF_AREA: regionCode,
       SECTOR: sectorCode,
@@ -564,10 +658,10 @@ async function getTimeSeriesData(
 }
 
 // Fetch seniority-specific recovery rate data
-async function getSeniorityRecoveryData(seniorityCode: string, regionCode: string = "_T"): Promise<DataResult<number>> {
+async function getSeniorityRecoveryData(seniorityCode: string, regionCode: string = "_T", dataSource: DataSource = 'public'): Promise<DataResult<number>> {
   const recoveryParams = {
     DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: "IFC_GEM_PBR",  // Public recovery rates indicator
+    INDICATOR: INDICATOR_MAP[dataSource].recovery,  // Use appropriate recovery indicator based on data source
     METRIC: "ARR",              // Average Recovery Rate (percentage)
     REF_AREA: regionCode,
     SECTOR: "_T",
@@ -609,10 +703,10 @@ async function getSeniorityRecoveryData(seniorityCode: string, regionCode: strin
 }
 
 // Fetch project type data from IFC_GEM_PBD indicator with comprehensive error handling
-async function getProjectTypeData(projectTypeCode: string, regionCode: string = "_T", sectorCode: string = "_T"): Promise<SectorDataResult | { error: DataError }> {
+async function getProjectTypeData(projectTypeCode: string, regionCode: string = "_T", sectorCode: string = "_T", dataSource: DataSource = 'public'): Promise<SectorDataResult | { error: DataError }> {
   const params = {
     DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: "IFC_GEM_PBD",  // Public default rates
+    INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
     METRIC: "ADR",              // Average Default Rate
     REF_AREA: regionCode,
     SECTOR: sectorCode,
@@ -643,7 +737,7 @@ async function getProjectTypeData(projectTypeCode: string, regionCode: string = 
   }
 
   // Try to get recovery rate for this region
-  const recoveryResult = await getRecoveryRateData(regionCode);
+  const recoveryResult = await getRecoveryRateData(regionCode, dataSource);
 
   let recoveryRate: number;
   let isRecoveryEstimated: boolean;
@@ -670,7 +764,7 @@ async function getProjectTypeData(projectTypeCode: string, regionCode: string = 
   };
 }
 
-async function getRegionData(region: string): Promise<RegionDataResult | { error: DataError } | null> {
+async function getRegionData(region: string, dataSource: DataSource = 'public'): Promise<RegionDataResult | { error: DataError } | null> {
   const apiCode = REGION_NAMES[region.toLowerCase()];
   if (!apiCode) {
     return null;
@@ -678,11 +772,11 @@ async function getRegionData(region: string): Promise<RegionDataResult | { error
 
   try {
     // Fetch default rate - using proper World Bank Data360 API parameters
-    // INDICATOR: IFC_GEM_PBD = Average public default rates (percentage)
+    // Use appropriate indicator based on data source (public or private)
     // METRIC: ADR = Average Default Rate (not CP which is counterpart count!)
     const defaultParams = {
       DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: "IFC_GEM_PBD",
+      INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
       METRIC: "ADR",
       REF_AREA: apiCode,
       SECTOR: "_T",  // Overall (all sectors)
@@ -757,8 +851,8 @@ async function getRegionData(region: string): Promise<RegionDataResult | { error
           .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0]?.OBS_VALUE || '0') * 1e6
       : 0;
 
-    // Fetch real recovery rate from API (IFC_GEM_PBR indicator)
-    const recoveryResult = await getRecoveryRateData(apiCode);
+    // Fetch real recovery rate from API (use appropriate indicator based on data source)
+    const recoveryResult = await getRecoveryRateData(apiCode, dataSource);
 
     // Determine recovery rate and approximation status
     let recoveryRate: number;
@@ -798,13 +892,16 @@ const handler = createMcpHandler(
     // Tool 1: Get Default Rates
     server.tool(
       'get_default_rates',
-      'Query default frequencies for emerging market lending by region',
+      'Query default frequencies for emerging market lending by region. Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .describe('Region to query (e.g., global, east-asia, latin-america)')
+          .describe('Region to query (e.g., global, east-asia, latin-america)'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ region }) => {
-        const result = await getRegionData(region);
+      async ({ region, data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
+        const result = await getRegionData(region, dataSource);
 
         // Handle errors
         if (!result || 'error' in result) {
@@ -860,10 +957,12 @@ const handler = createMcpHandler(
         // At this point TypeScript knows result is RegionDataResult
         const data = result as RegionDataResult;
 
+        const attribution = getDataSourceAttribution(dataSource);
+
         return {
           content: [{
             type: 'text',
-            text: `# Default Rates for ${data.region}\n\n**Default Rate:** ${data.defaultRate}%\n\n**Period:** ${data.period}\n\n**Context:** Out of ${data.numberOfLoans.toLocaleString()} loans totaling $${(data.totalVolume / 1e9).toFixed(1)} billion USD, ${data.defaultRate}% resulted in default.\n\n*Data source: World Bank Data360 IFC_GEM (real-time)*`
+            text: `# Default Rates for ${data.region}\n\n**Default Rate:** ${data.defaultRate}%\n\n**Period:** ${data.period}\n\n**Context:** Out of ${data.numberOfLoans.toLocaleString()} loans totaling $${(data.totalVolume / 1e9).toFixed(1)} billion USD, ${data.defaultRate}% resulted in default.\n\n${attribution}`
           }]
         };
       }
@@ -872,13 +971,16 @@ const handler = createMcpHandler(
     // Tool 2: Get Recovery Rates
     server.tool(
       'get_recovery_rates',
-      'Retrieve recovery rates for defaulted loans by region',
+      'Retrieve recovery rates for defaulted loans by region. Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .describe('Region to query')
+          .describe('Region to query'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ region }) => {
-        const data = await getRegionData(region);
+      async ({ region, data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
+        const data = await getRegionData(region, dataSource);
 
         // Handle errors with transparent messaging
         if (!data || 'error' in data) {
@@ -983,10 +1085,10 @@ const handler = createMcpHandler(
 
         // Data source attribution
         if (regionData.isRecoveryEstimated) {
-          resultText += `*Approximated based on default rate correlation*`;
-        } else {
-          resultText += `*Real-time data from World Bank Data360 IFC_GEM_PBR*`;
+          resultText += `*Approximated based on default rate correlation*\n\n`;
         }
+
+        resultText += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
@@ -1000,13 +1102,16 @@ const handler = createMcpHandler(
     // Tool 3: Query Credit Risk
     server.tool(
       'query_credit_risk',
-      'Get comprehensive credit risk statistics for a region including default rates, recovery rates, and loan volumes',
+      'Get comprehensive credit risk statistics for a region including default rates, recovery rates, and loan volumes. Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .describe('Region to analyze')
+          .describe('Region to analyze'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ region }) => {
-        const result = await getRegionData(region);
+      async ({ region, data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
+        const result = await getRegionData(region, dataSource);
 
         // Handle errors
         if (!result || 'error' in result) {
@@ -1049,13 +1154,14 @@ const handler = createMcpHandler(
         // Determine data source note with transparent approximation
         const recoveryNote = data.isRecoveryEstimated
           ? ' (approximated - see note below)'
-          : ' (real-time API)';
+          : '';
         let dataNote = data.isRecoveryEstimated
           ? '**Note on Recovery Rate:** Real recovery rate data not available. Approximated using statistical correlation:\n' +
             `- Formula: 73% (baseline) + (3.5% - ${data.defaultRate.toFixed(2)}%) × 1.5\n` +
-            '- Confidence: Moderate (±5-10% typical variance)\n\n' +
-            '*Default rate from World Bank Data360 IFC_GEM_PBD (real-time)*'
-          : '*Real-time data from World Bank Data360 IFC_GEM (default rates: IFC_GEM_PBD, recovery rates: IFC_GEM_PBR)*';
+            '- Confidence: Moderate (±5-10% typical variance)\n\n'
+          : '';
+
+        dataNote += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
@@ -1069,7 +1175,7 @@ const handler = createMcpHandler(
     // Tool 4: Sector Analysis
     server.tool(
       'get_sector_analysis',
-      'Analyze credit risk performance by economic sector (21 sectors: GICS + IFC categories)',
+      'Analyze credit risk performance by economic sector (21 sectors: GICS + IFC categories). Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         sector: z.enum([
           'all', 'overall',
@@ -1082,9 +1188,12 @@ const handler = createMcpHandler(
           'health-care', 'energy', 'real-estate', 'information-technology', 'administration'
         ])
           .optional()
-          .describe('Economic sector to analyze, or "all" for all sectors')
+          .describe('Economic sector to analyze, or "all" for all sectors'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ sector = 'all' }) => {
+      async ({ sector = 'all', data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
         // Map user-friendly names to sector codes
         const sectorMapping: Record<string, string> = {
           'all': '_T',
@@ -1115,7 +1224,7 @@ const handler = createMcpHandler(
 
         if (sector !== 'all' && sector !== 'overall') {
           // Fetch real data for specific sector
-          const result = await getSectorData(sectorCode);
+          const result = await getSectorData(sectorCode, "_T", "_T", dataSource);
 
           if (!result || 'error' in result) {
             const error = result && 'error' in result ? result.error : undefined;
@@ -1157,14 +1266,16 @@ const handler = createMcpHandler(
 
           const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
           const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
-          const dataSource = data.isRecoveryEstimated
-            ? '*Default rate from World Bank Data360 IFC_GEM_PBD (real-time). Recovery rate estimated.*'
-            : '*Real-time data from World Bank Data360 IFC_GEM*';
+          let dataSourceNote = '';
+          if (data.isRecoveryEstimated) {
+            dataSourceNote = '*Recovery rate estimated (real data unavailable).*\n\n';
+          }
+          dataSourceNote += getDataSourceAttribution(dataSource);
 
           return {
             content: [{
               type: 'text',
-              text: `# Sector Analysis: ${data.sectorName}\n\n**Default Rate:** ${data.defaultRate.toFixed(2)}%\n**Recovery Rate:** ${data.recoveryRate.toFixed(2)}%${recoveryNote}\n**Expected Loss:** ${expectedLoss}%\n**Period:** ${data.period}\n\n${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n${dataSource}`
+              text: `# Sector Analysis: ${data.sectorName}\n\n**Default Rate:** ${data.defaultRate.toFixed(2)}%\n**Recovery Rate:** ${data.recoveryRate.toFixed(2)}%${recoveryNote}\n**Expected Loss:** ${expectedLoss}%\n**Period:** ${data.period}\n\n${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n${dataSourceNote}`
             }]
           };
         }
@@ -1174,7 +1285,7 @@ const handler = createMcpHandler(
         const sectorDataArray: SectorDataResult[] = [];
 
         for (const code of topSectorCodes) {
-          const result = await getSectorData(code);
+          const result = await getSectorData(code, "_T", "_T", dataSource);
           if (result && !('error' in result)) {
             sectorDataArray.push(result as SectorDataResult);
           }
@@ -1216,8 +1327,8 @@ const handler = createMcpHandler(
             result += `| ${s.sectorName} | ${s.defaultRate.toFixed(2)}% | ${s.recoveryRate.toFixed(2)}%${recoveryMark} | ${expectedLoss}% |\n`;
           });
 
-        result += `\n*Real-time data from World Bank Data360 IFC_GEM*`;
-        result += `\n* = Recovery rate estimated`;
+        result += `\n* = Recovery rate estimated\n\n`;
+        result += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
@@ -1231,16 +1342,19 @@ const handler = createMcpHandler(
     // Tool 5: Compare Regions
     server.tool(
       'compare_regions',
-      'Compare credit risk metrics across multiple emerging market regions',
+      'Compare credit risk metrics across multiple emerging market regions. Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         metric: z.enum(['default-rate', 'recovery-rate', 'both'])
-          .describe('Metric to compare across regions')
+          .describe('Metric to compare across regions'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ metric }) => {
+      async ({ metric, data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
         // Try to fetch real data for all regions
         const regionDataArray: RegionDataResult[] = [];
         for (const regionName of Object.keys(REGION_NAMES)) {
-          const result = await getRegionData(regionName);
+          const result = await getRegionData(regionName, dataSource);
           if (result && !('error' in result)) {
             regionDataArray.push(result as RegionDataResult);
           }
@@ -1266,7 +1380,8 @@ const handler = createMcpHandler(
             });
           }
 
-          result += `\n*Real-time data from World Bank Data360*`;
+          result += `\n`;
+          result += getDataSourceAttribution(dataSource);
         } else {
           // Fallback to mock data
           if (metric === 'default-rate' || metric === 'both') {
@@ -1291,7 +1406,7 @@ const handler = createMcpHandler(
     // Tool 6: Project Type Analysis
     server.tool(
       'get_project_type_analysis',
-      'Analyze credit risk by project financing type (Corporate Finance, Project Finance, etc.)',
+      'Analyze credit risk by project financing type (Corporate Finance, Project Finance, etc.). Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         projectType: z.enum([
           'all', 'overall',
@@ -1299,9 +1414,12 @@ const handler = createMcpHandler(
           'structured-finance', 'mixed', 'other'
         ])
           .optional()
-          .describe('Project financing type to analyze, or "all" for comparison')
+          .describe('Project financing type to analyze, or "all" for comparison'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ projectType = 'all' }) => {
+      async ({ projectType = 'all', data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
         // Map user-friendly names to project type codes
         const projectTypeMapping: Record<string, string> = {
           'all': '_T',
@@ -1318,7 +1436,7 @@ const handler = createMcpHandler(
 
         if (projectType !== 'all' && projectType !== 'overall') {
           // Fetch real data for specific project type
-          const result = await getProjectTypeData(projectTypeCode);
+          const result = await getProjectTypeData(projectTypeCode, "_T", "_T", dataSource);
 
           if (!result || 'error' in result) {
             const error = result && 'error' in result ? result.error : undefined;
@@ -1345,9 +1463,11 @@ const handler = createMcpHandler(
 
           const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
           const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
-          const dataSource = data.isRecoveryEstimated
-            ? '*Default rate from World Bank Data360 IFC_GEM_PBD (real-time). Recovery rate estimated.*'
-            : '*Real-time data from World Bank Data360 IFC_GEM*';
+          let dataSourceNote = '';
+          if (data.isRecoveryEstimated) {
+            dataSourceNote = '*Recovery rate estimated (real data unavailable).*\n\n';
+          }
+          dataSourceNote += getDataSourceAttribution(dataSource);
 
           return {
             content: [{
@@ -1358,7 +1478,7 @@ const handler = createMcpHandler(
                     `**Expected Loss:** ${expectedLoss}%\n` +
                     `**Period:** ${data.period}\n\n` +
                     `${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n` +
-                    `${dataSource}`
+                    `${dataSourceNote}`
             }]
           };
         }
@@ -1368,7 +1488,7 @@ const handler = createMcpHandler(
         const projectTypeDataArray: SectorDataResult[] = [];
 
         for (const code of projectTypeCodes) {
-          const result = await getProjectTypeData(code);
+          const result = await getProjectTypeData(code, "_T", "_T", dataSource);
           if (result && !('error' in result)) {
             projectTypeDataArray.push(result as SectorDataResult);
           }
@@ -1402,8 +1522,8 @@ const handler = createMcpHandler(
         result += `- Lowest risk: ${lowest.sectorName} (${lowest.defaultRate.toFixed(2)}%)\n`;
         result += `- Highest risk: ${highest.sectorName} (${highest.defaultRate.toFixed(2)}%)\n`;
         result += `- Risk spread: ${(highest.defaultRate - lowest.defaultRate).toFixed(2)}% difference\n\n`;
-        result += `*Real-time data from World Bank Data360 IFC_GEM*\n`;
-        result += `* = Recovery rate estimated`;
+        result += `* = Recovery rate estimated\n\n`;
+        result += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
@@ -1417,21 +1537,24 @@ const handler = createMcpHandler(
     // Tool 7: Time Series Analysis
     server.tool(
       'get_time_series',
-      'Analyze historical trends in credit risk metrics over time (1994-2024)',
+      'Analyze historical trends in credit risk metrics over time (1994-2024). Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .optional()
           .describe('Region to analyze (defaults to global)'),
         years: z.number()
           .optional()
-          .describe('Number of recent years to analyze (default: 10)')
+          .describe('Number of recent years to analyze (default: 10)'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ region = 'global', years = 10 }) => {
+      async ({ region = 'global', years = 10, data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
         const regionCode = REGION_NAMES[region];
         const currentYear = new Date().getFullYear();
         const startYear = currentYear - years;
 
-        const result = await getTimeSeriesData(regionCode, "_T", "_T", startYear, currentYear);
+        const result = await getTimeSeriesData(regionCode, "_T", "_T", startYear, currentYear, dataSource);
 
         if ('error' in result) {
           return {
@@ -1479,7 +1602,8 @@ const handler = createMcpHandler(
           resultText += `| ${point.year} | ${point.defaultRate.toFixed(2)}% | ${changeStr} |\n`;
         });
 
-        resultText += `\n*Real-time data from World Bank Data360 IFC_GEM*`;
+        resultText += `\n`;
+        resultText += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
@@ -1493,20 +1617,23 @@ const handler = createMcpHandler(
     // Tool 8: Seniority Analysis
     server.tool(
       'get_seniority_analysis',
-      'Compare recovery rates by debt seniority (Senior Secured vs Senior Unsecured)',
+      'Compare recovery rates by debt seniority (Senior Secured vs Senior Unsecured). Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .optional()
-          .describe('Region to analyze (defaults to global)')
+          .describe('Region to analyze (defaults to global)'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ region = 'global' }) => {
+      async ({ region = 'global', data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
         const regionCode = REGION_NAMES[region];
         const regionName = REGION_DISPLAY_NAMES[regionCode];
 
         // Fetch recovery rates for both seniority levels
         const [ssResult, suResult] = await Promise.all([
-          getSeniorityRecoveryData('SS', regionCode),
-          getSeniorityRecoveryData('SU', regionCode)
+          getSeniorityRecoveryData('SS', regionCode, dataSource),
+          getSeniorityRecoveryData('SU', regionCode, dataSource)
         ]);
 
         // Handle errors
@@ -1555,8 +1682,8 @@ const handler = createMcpHandler(
         resultText += `- Senior unsecured loans offer ${suRate.toFixed(2)}% average recovery on default\n`;
         resultText += `- Security reduces expected loss by ${securityPremium.toFixed(2)} percentage points\n\n`;
 
-        resultText += `*Real-time data from World Bank Data360 IFC_GEM_PBR*\n`;
-        resultText += `*Period: 1994-2024*`;
+        resultText += `*Period: 1994-2024*\n\n`;
+        resultText += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
@@ -1570,7 +1697,7 @@ const handler = createMcpHandler(
     // Tool 9: Multi-Dimensional Query
     server.tool(
       'query_multidimensional',
-      'Query credit risk data with multiple filters (region + sector + project type)',
+      'Query credit risk data with multiple filters (region + sector + project type). Data sources: "public" (publicly disclosed rates, default) or "private" (IFC internal data, 4x more observations, more conservative)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .optional()
@@ -1591,9 +1718,12 @@ const handler = createMcpHandler(
           'structured-finance', 'mixed', 'other'
         ])
           .optional()
-          .describe('Project type filter (defaults to all project types)')
+          .describe('Project type filter (defaults to all project types)'),
+        data_source: z.enum(['public', 'private']).optional()
+          .describe('Data source: "public" (IFC_GEM_PBD/PBR) or "private" (IFC_GEM_PRD/PRR, recommended). Default: public')
       },
-      async ({ region = 'global', sector = 'all', projectType = 'all' }) => {
+      async ({ region = 'global', sector = 'all', projectType = 'all', data_source }) => {
+        const dataSource: DataSource = data_source as DataSource || 'public';
         // Map user-friendly names to codes
         const regionCode = REGION_NAMES[region];
         const regionName = REGION_DISPLAY_NAMES[regionCode];
@@ -1623,7 +1753,7 @@ const handler = createMcpHandler(
         // Fetch data with all filters
         const params = {
           DATABASE_ID: IFC_GEM_DATASET,
-          INDICATOR: "IFC_GEM_PBD",
+          INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
           METRIC: "ADR",
           REF_AREA: regionCode,
           SECTOR: sectorCode,
@@ -1710,10 +1840,11 @@ const handler = createMcpHandler(
 
         resultText += `**Sample Size Note:** More specific filters may have smaller sample sizes and higher variance.\n\n`;
 
-        resultText += `*Real-time data from World Bank Data360 IFC_GEM*\n`;
         if (isRecoveryEstimated) {
-          resultText += `*Recovery rate approximated using statistical correlation*`;
+          resultText += `*Recovery rate approximated using statistical correlation*\n\n`;
         }
+
+        resultText += getDataSourceAttribution(dataSource);
 
         return {
           content: [{
