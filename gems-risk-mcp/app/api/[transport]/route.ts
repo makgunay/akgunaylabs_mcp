@@ -74,31 +74,40 @@ const SENIORITY_NAMES: Record<string, string> = {
 };
 
 // Data source types
-type DataSource = 'public' | 'private';
+type DataSource = 'sovereign' | 'public' | 'private';
 
-// Indicator mapping for public vs private data
+// Indicator mapping for sovereign, public, and private sector data
 const INDICATOR_MAP: Record<DataSource, { default: string; recovery: string }> = {
+  sovereign: {
+    default: "IFC_GEM_SD",    // Sovereign default rates
+    recovery: "IFC_GEM_SR"    // Sovereign recovery rates
+  },
   public: {
-    default: "IFC_GEM_PBD",   // Public default rates
-    recovery: "IFC_GEM_PBR"   // Public recovery rates
+    default: "IFC_GEM_PBD",   // Public sector default rates
+    recovery: "IFC_GEM_PBR"   // Public sector recovery rates
   },
   private: {
-    default: "IFC_GEM_PRD",   // Private default rates
-    recovery: "IFC_GEM_PRR"   // Private recovery rates
+    default: "IFC_GEM_PRD",   // Private sector default rates
+    recovery: "IFC_GEM_PRR"   // Private sector recovery rates
   }
 };
 
 // Data source characteristics for attribution
 const DATA_SOURCE_INFO: Record<DataSource, { label: string; description: string; sampleSize: string }> = {
+  sovereign: {
+    label: "SOVEREIGN dataset (IFC_GEM_SD/SR)",
+    description: "Sovereign debt (national governments, sovereign bonds)",
+    sampleSize: "~4,889 default observations, ~46 recovery observations (largest dataset)"
+  },
   public: {
     label: "PUBLIC SECTOR dataset (IFC_GEM_PBD/PBR)",
-    description: "Government and public sector lending (sovereign, sub-sovereign)",
+    description: "Sub-sovereign public sector lending (regional/local government, public entities)",
     sampleSize: "~619 default observations, ~172 recovery observations"
   },
   private: {
     label: "PRIVATE SECTOR dataset (IFC_GEM_PRD/PRR)",
     description: "Private sector lending (corporate, financial institutions, projects)",
-    sampleSize: "~2,853 default observations, ~1,269 recovery observations (4-7x more data)"
+    sampleSize: "~2,853 default observations, ~1,269 recovery observations"
   }
 };
 
@@ -280,28 +289,50 @@ function interpretDataSource(promptText?: string, explicitSource?: DataSource): 
 
   const lowerPrompt = promptText.toLowerCase();
 
+  // Trigger words for SOVEREIGN data (SD/SR)
+  const sovereignTriggers = [
+    'sovereign',
+    'sovereign debt',
+    'national government',
+    'government bond',
+    'country risk',
+    'sovereign bond',
+    'sovereign risk',
+    'country default',
+    'ifc_gem_sd',
+    'ifc_gem_sr'
+  ];
+
   // Trigger words for PRIVATE data (PRD/PRR)
   const privateTriggers = [
     'private sector',
-    'private data',
-    'internal data',
-    'actual recoveries',
-    'ifc experience',
-    'conservative estimate',
-    'ifc internal',
-    'prd',
-    'prr'
+    'corporate',
+    'business',
+    'company',
+    'firm',
+    'enterprise',
+    'ifc_gem_prd',
+    'ifc_gem_prr'
   ];
 
   // Trigger words for PUBLIC data (PBD/PBR)
   const publicTriggers = [
-    'public data',
-    'publicly reported',
-    'disclosed data',
-    'market benchmark',
-    'pbd',
-    'pbr'
+    'public sector',
+    'sub-sovereign',
+    'municipal',
+    'regional government',
+    'local government',
+    'public entity',
+    'ifc_gem_pbd',
+    'ifc_gem_pbr'
   ];
+
+  // Check for sovereign triggers (highest priority - most specific)
+  for (const trigger of sovereignTriggers) {
+    if (lowerPrompt.includes(trigger)) {
+      return 'sovereign';
+    }
+  }
 
   // Check for private triggers
   for (const trigger of privateTriggers) {
@@ -892,12 +923,12 @@ const handler = createMcpHandler(
     // Tool 1: Get Default Rates
     server.tool(
       'get_default_rates',
-      'Query default frequencies for emerging market lending by region. Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Query default frequencies for emerging market lending by region. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .describe('Region to query (e.g., global, east-asia, latin-america)'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ region, data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -971,12 +1002,12 @@ const handler = createMcpHandler(
     // Tool 2: Get Recovery Rates
     server.tool(
       'get_recovery_rates',
-      'Retrieve recovery rates for defaulted loans by region. Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Retrieve recovery rates for defaulted loans by region. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .describe('Region to query'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ region, data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1102,12 +1133,12 @@ const handler = createMcpHandler(
     // Tool 3: Query Credit Risk
     server.tool(
       'query_credit_risk',
-      'Get comprehensive credit risk statistics for a region including default rates, recovery rates, and loan volumes. Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Get comprehensive credit risk statistics for a region including default rates, recovery rates, and loan volumes. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .describe('Region to analyze'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ region, data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1175,7 +1206,7 @@ const handler = createMcpHandler(
     // Tool 4: Sector Analysis
     server.tool(
       'get_sector_analysis',
-      'Analyze credit risk performance by economic sector (21 sectors: GICS + IFC categories). Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Analyze credit risk performance by economic sector (21 sectors: GICS + IFC categories). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         sector: z.enum([
           'all', 'overall',
@@ -1189,8 +1220,8 @@ const handler = createMcpHandler(
         ])
           .optional()
           .describe('Economic sector to analyze, or "all" for all sectors'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ sector = 'all', data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1342,12 +1373,12 @@ const handler = createMcpHandler(
     // Tool 5: Compare Regions
     server.tool(
       'compare_regions',
-      'Compare credit risk metrics across multiple emerging market regions. Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Compare credit risk metrics across multiple emerging market regions. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         metric: z.enum(['default-rate', 'recovery-rate', 'both'])
           .describe('Metric to compare across regions'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ metric, data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1406,7 +1437,7 @@ const handler = createMcpHandler(
     // Tool 6: Project Type Analysis
     server.tool(
       'get_project_type_analysis',
-      'Analyze credit risk by project financing type (Corporate Finance, Project Finance, etc.). Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Analyze credit risk by project financing type (Corporate Finance, Project Finance, etc.). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         projectType: z.enum([
           'all', 'overall',
@@ -1415,8 +1446,8 @@ const handler = createMcpHandler(
         ])
           .optional()
           .describe('Project financing type to analyze, or "all" for comparison'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ projectType = 'all', data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1537,7 +1568,7 @@ const handler = createMcpHandler(
     // Tool 7: Time Series Analysis
     server.tool(
       'get_time_series',
-      'Analyze historical trends in credit risk metrics over time (1994-2024). Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Analyze historical trends in credit risk metrics over time (1994-2024). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .optional()
@@ -1545,8 +1576,8 @@ const handler = createMcpHandler(
         years: z.number()
           .optional()
           .describe('Number of recent years to analyze (default: 10)'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ region = 'global', years = 10, data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1617,13 +1648,13 @@ const handler = createMcpHandler(
     // Tool 8: Seniority Analysis
     server.tool(
       'get_seniority_analysis',
-      'Compare recovery rates by debt seniority (Senior Secured vs Senior Unsecured). Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Compare recovery rates by debt seniority (Senior Secured vs Senior Unsecured). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .optional()
           .describe('Region to analyze (defaults to global)'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ region = 'global', data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
@@ -1697,7 +1728,7 @@ const handler = createMcpHandler(
     // Tool 9: Multi-Dimensional Query
     server.tool(
       'query_multidimensional',
-      'Query credit risk data with multiple filters (region + sector + project type). Data sources: "public" (public sector/government lending) or "private" (private sector/corporate lending, 4x more observations)',
+      'Query credit risk data with multiple filters (region + sector + project type). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
         region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
           .optional()
@@ -1719,8 +1750,8 @@ const handler = createMcpHandler(
         ])
           .optional()
           .describe('Project type filter (defaults to all project types)'),
-        data_source: z.enum(['public', 'private']).optional()
-          .describe('Data source: "public" (public sector lending) or "private" (private sector lending, recommended). Default: public')
+        data_source: z.enum(['sovereign', 'public', 'private']).optional()
+          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
       },
       async ({ region = 'global', sector = 'all', projectType = 'all', data_source }) => {
         const dataSource: DataSource = data_source as DataSource || 'public';
