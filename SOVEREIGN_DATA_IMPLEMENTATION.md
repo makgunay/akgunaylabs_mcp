@@ -18,26 +18,31 @@ The GEMS Risk MCP server now supports **all three economic sectors** available i
 
 ## Complete Indicator Coverage
 
-### Current Implementation Status
+### Official IFC GEMs Indicator Reference
 
-| Category | Indicator | Type | Coverage | Status | Sample Size |
-|----------|-----------|------|----------|--------|-------------|
-| **Sovereign** | IFC_GEM_SD | Average default rates | All time | ✅ **IMPLEMENTED** | ~4,889 observations |
-| **Sovereign** | IFC_GEM_SR | Average recovery rates | All time | ✅ **IMPLEMENTED** | ~46 defaults |
-| **Sovereign** | IFC_GEM_SD_H | Historical defaults | 1984-2024 | ⏳ Not yet (optimization candidate) | Annual by year |
-| **Sovereign** | IFC_GEM_SR_H | Historical recovery | 1984-2024 | ⏳ Not yet (optimization candidate) | Annual by year |
-| **Public** | IFC_GEM_PBD | Average default rates | All time | ✅ **IMPLEMENTED** | ~619 observations |
-| **Public** | IFC_GEM_PBR | Average recovery rates | All time | ✅ **IMPLEMENTED** | ~172 observations |
-| **Public** | IFC_GEM_PBD_H | Historical defaults | 1994-2024 | ⏳ Not yet (optimization candidate) | Annual by year |
-| **Public** | IFC_GEM_PBR_H | Historical recovery | 1994-2024 | ⏳ Not yet (optimization candidate) | Annual by year |
-| **Private** | IFC_GEM_PRD | Average default rates | All time | ✅ **IMPLEMENTED** | ~2,853 observations |
-| **Private** | IFC_GEM_PRR | Average recovery rates | All time | ✅ **IMPLEMENTED** | ~1,269 observations |
-| **Private** | IFC_GEM_PRD_H | Historical defaults | 1994-2024 | ❓ **Existence uncertain** | Unknown |
-| **Private** | IFC_GEM_PRR_H | Historical recovery | 1994-2024 | ⏳ Not yet (optimization candidate) | Annual by year |
+Based on official IFC GEMs database documentation:
 
-**Current Coverage:** 6 out of 12 indicators (50%)
-- ✅ All 6 "Average" indicators implemented
-- ⏳ 6 "Historical" (_H) indicators available for optimization
+| Code | Indicator Name | Sector | Scope | Coverage | Status |
+|------|----------------|--------|-------|----------|--------|
+| IFC_GEM_SD | Average sovereign default rates | Sovereign | Average | — | ✅ **IMPLEMENTED** |
+| IFC_GEM_SR | Average sovereign recovery rates | Sovereign | Average | — | ✅ **IMPLEMENTED** |
+| IFC_GEM_SD_H | Historical sovereign default rates | Sovereign | Annual | 1984-2024 | ⏳ Future optimization |
+| IFC_GEM_SR_H | Historical sovereign recovery rates | Sovereign | Annual | 1984-2024 | ⏳ Future optimization |
+| IFC_GEM_PBD | Average public default rates | Public (sub-sovereign/SOEs) | Average | — | ✅ **IMPLEMENTED** |
+| IFC_GEM_PBR | Average public recovery rates | Public (sub-sovereign/SOEs) | Average | — | ✅ **IMPLEMENTED** |
+| IFC_GEM_PBD_H | Historical public default rates | Public (sub-sovereign/SOEs) | Annual | 1994-2024 | ⏳ Future optimization |
+| IFC_GEM_PBR_H | Historical public recovery rates | Public (sub-sovereign/SOEs) | Annual | 1994-2024 | ⏳ Future optimization |
+| IFC_GEM_PRD | Average private default rates | Private | Average | — | ✅ **IMPLEMENTED** |
+| IFC_GEM_PRR | Average private recovery rates | Private | Average | — | ✅ **IMPLEMENTED** |
+| IFC_GEM_PRR_H | Historical private recovery rates | Private | Annual | 1994-2024 | ⏳ Future optimization |
+
+**Note:** `IFC_GEM_PRD_H` (historical private default rates) does not exist in the official IFC GEMs database.
+
+### Implementation Summary
+
+**Current Coverage:** 6 out of 11 indicators (54.5%)
+- ✅ All 6 "Average" indicators implemented (SD, SR, PBD, PBR, PRD, PRR)
+- ⏳ 5 "Historical" (_H) indicators available for future optimization
 
 ---
 
@@ -464,7 +469,7 @@ Manual testing recommended:
 
 After deployment:
 
-1. **Coverage:** 6 out of 12 indicators (50% → targeting 100% in future)
+1. **Coverage:** 6 out of 11 indicators (54.5% → targeting 100% in future)
 2. **Adoption:** Track % of queries using each data source
 3. **Accuracy:** Validate sovereign data returns expected low default rates
 4. **User feedback:** Survey users on three-sector model clarity
