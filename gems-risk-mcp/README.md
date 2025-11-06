@@ -1,96 +1,59 @@
-# GEMs Risk MCP - Vercel Deployment
+# IFC GEMs Risk MCP Server
 
-This is the Vercel-optimized version of the GEMs Risk MCP server, using the official `mcp-handler` package for seamless integration with Vercel's serverless platform.
+**Access emerging markets credit risk data through your AI assistant**
 
-## 🚀 Quick Deploy to Vercel
-
-### Option 1: Deploy from GitHub (Recommended)
-
-1. **Push this folder to GitHub**
-2. **Go to [Vercel](https://vercel.com)**
-3. **Click "Add New Project"**
-4. **Import your GitHub repository**
-5. **Click "Deploy"** (Vercel auto-detects the configuration)
-
-That's it! Your MCP will be live at: `https://your-project.vercel.app/api/mcp`
+The IFC GEMs Risk MCP (Model Context Protocol) server provides real-time access to the World Bank's IFC Global Emerging Markets (GEMs) Risk Database—a comprehensive source of credit risk analytics for emerging market lending.
 
 ---
 
-### Option 2: Deploy with Vercel CLI
+## 🎯 What It Does
 
-```bash
-# 1. Install dependencies
-npm install
+This MCP server enables AI assistants (like Claude) to query credit risk data for emerging markets across three economic sectors:
 
-# 2. Install Vercel CLI (if not already installed)
-npm install -g vercel
+- **Sovereign** - National government debt and sovereign bonds (lowest risk)
+- **Public Sector** - Sub-sovereign entities and state-owned enterprises (SOEs)
+- **Private Sector** - Corporate and private sector lending (largest dataset)
 
-# 3. Login to Vercel
-vercel login
-
-# 4. Deploy
-vercel --prod
-```
+You can analyze default rates, recovery rates, expected losses, and historical trends across 7 global regions, 15 economic sectors, and 40+ years of data.
 
 ---
 
-## 📋 Features
+## 💡 Use Cases
 
-This MCP server provides **5 tools** for querying credit risk data from the World Bank's IFC_GEM database:
+### For Financial Analysts
+- **Portfolio Risk Assessment** - Evaluate credit risk for emerging market portfolios
+- **Regional Comparison** - Compare default and recovery rates across regions
+- **Sector Analysis** - Identify high-risk vs low-risk economic sectors
+- **Country Risk** - Assess sovereign debt default probabilities
 
-### Available Tools:
+### For Development Finance
+- **Project Evaluation** - Analyze historical performance by project type (infrastructure, manufacturing, etc.)
+- **Seniority Analysis** - Compare senior vs subordinated debt recovery rates
+- **Time Series Trends** - Track how credit risk has evolved over decades
 
-1. **get_default_rates** - Query default frequencies by region
-2. **get_recovery_rates** - Retrieve recovery rates for defaulted loans
-3. **query_credit_risk** - Comprehensive credit risk statistics
-4. **get_sector_analysis** - Credit performance by economic sector
-5. **compare_regions** - Compare metrics across regions
-
-### Supported Regions:
-
-- Global
-- East Asia & Pacific
-- Latin America & Caribbean
-- Sub-Saharan Africa
-- South Asia
-- Middle East & North Africa
-- Europe & Central Asia
+### For Research & Education
+- **Emerging Markets Research** - Access authoritative IFC credit risk data
+- **Historical Analysis** - Study credit cycles from 1984-2024
+- **Risk Modeling** - Use real-world data for credit risk models
 
 ---
 
-## 🔧 Local Development
+## 🔧 How to Connect
 
-```bash
-# Install dependencies
-npm install
+### Prerequisites
+- Claude Desktop (or any MCP-compatible client)
+- The deployed MCP server URL (provided by your administrator)
 
-# Start local development server
-npm run dev
+### Configuration Steps
 
-# Server will run at: http://localhost:3000/api/mcp
-```
+#### Option 1: Claude Desktop (Recommended)
 
-### Test with MCP Inspector
+1. **Open Claude Desktop configuration file:**
+   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+   - **Linux:** `~/.config/Claude/claude_desktop_config.json`
 
-```bash
-# In a separate terminal, run MCP inspector
-npx @modelcontextprotocol/inspector http://localhost:3000/api/mcp
-```
-
----
-
-## 🔗 Connect to Your MCP Server
-
-### After Deployment
-
-Once deployed, your MCP server URL will be:
-```
-https://your-project-name.vercel.app/api/mcp
-```
-
-### Option 1: Use with Claude Desktop (via mcp-remote bridge)
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on Mac):
+2. **Add the GEMs Risk server:**
 
 ```json
 {
@@ -100,20 +63,26 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
       "args": [
         "-y",
         "mcp-remote",
-        "https://your-project-name.vercel.app/api/mcp"
+        "https://YOUR-SERVER-URL/api/mcp"
       ]
     }
   }
 }
 ```
 
-### Option 2: Direct HTTP Access (for MCP clients with HTTP support)
+3. **Replace `YOUR-SERVER-URL`** with the actual server URL provided to you
+
+4. **Restart Claude Desktop**
+
+#### Option 2: Direct HTTP Connection
+
+If your MCP client supports direct HTTP connections:
 
 ```json
 {
   "mcpServers": {
     "gems-risk": {
-      "url": "https://your-project-name.vercel.app/api/mcp",
+      "url": "https://YOUR-SERVER-URL/api/mcp",
       "transport": "streamable-http"
     }
   }
@@ -122,216 +91,343 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 ---
 
-## 📊 Data Source
+## 📊 Available Tools
 
-The MCP fetches real-time credit risk data from:
-- **API:** World Bank Data360 (data360api.worldbank.org)
+The server provides **9 specialized tools** for querying credit risk data:
+
+### 1. `get_default_rates`
+Query average default frequencies by region
+
+**Example:**
+```
+What's the default rate for Latin America?
+```
+
+### 2. `get_recovery_rates`
+Retrieve recovery rates for defaulted loans
+
+**Example:**
+```
+What percentage do lenders recover in Sub-Saharan Africa when defaults occur?
+```
+
+### 3. `query_credit_risk`
+Comprehensive credit risk profile with default, recovery, and expected loss
+
+**Example:**
+```
+Show me the complete credit risk profile for MENA region
+```
+
+### 4. `compare_regions`
+Compare default and recovery rates across all regions
+
+**Example:**
+```
+Compare default rates across all regions for sovereign debt
+```
+
+### 5. `get_sector_analysis`
+Analyze credit performance by economic sector (manufacturing, construction, etc.)
+
+**Example:**
+```
+What's the default rate for infrastructure projects in East Asia?
+```
+
+### 6. `get_project_type_analysis`
+Compare credit risk across project types (greenfield, expansion, privatization)
+
+**Example:**
+```
+Compare greenfield vs expansion projects in terms of credit risk
+```
+
+### 7. `get_time_series`
+Track default and recovery rates over time
+
+**Example:**
+```
+Show me the 10-year default rate trend for South Asia
+```
+
+### 8. `get_seniority_analysis`
+Compare senior vs subordinated debt recovery rates
+
+**Example:**
+```
+How much better do senior loans perform than subordinated debt?
+```
+
+### 9. `query_multidimensional`
+Advanced multi-dimensional queries across sector, project type, and seniority
+
+**Example:**
+```
+What's the default rate for senior infrastructure loans in Latin America?
+```
+
+---
+
+## 🌍 Coverage
+
+### Geographic Regions
+- **Global** - Worldwide aggregate
+- **East Asia & Pacific** (EAP)
+- **Latin America & Caribbean** (LAC)
+- **Sub-Saharan Africa** (SSA)
+- **South Asia** (SAR)
+- **Middle East & North Africa** (MENA)
+- **Europe & Central Asia** (ECA)
+
+### Economic Sectors (15 total)
+Agriculture, Manufacturing, Construction, Utilities, Commerce, Transportation, Financial Institutions, Health/Education, Infrastructure, Mining, Oil & Gas, Services, Telecom, Tourism, and more.
+
+### Project Types
+Greenfield, Expansion, Modernization, Privatization, Financial Restructuring, and more.
+
+### Data Sources (3 Economic Sectors)
+
+All tools accept an optional `data_source` parameter:
+
+- **`"sovereign"`** - National government debt (0.77% default rate, 95% recovery)
+- **`"public"`** - Sub-sovereign/SOE lending (1.89% default rate, 93% recovery)
+- **`"private"`** - Corporate lending (3.39% default rate, 72% recovery) - **Most common**
+
+**Default:** If not specified, queries use `"public"` sector data for backward compatibility.
+
+---
+
+## 📈 Data Source
+
+### World Bank IFC GEMs Database
+
+- **Source:** World Bank Data360 API
 - **Dataset:** IFC_GEM (Global Emerging Markets Risk Database)
-- **No authentication required** for the World Bank API
-- **Automatic fallback** to cached data if API is unavailable
+- **Authority:** International Finance Corporation (IFC) - World Bank Group
+- **Coverage:** 40+ years of emerging market credit data (1984-2024)
+- **Data Points:** 8,000+ default and recovery observations
+
+### Data Quality
+
+- **Real-time:** Live API connection to World Bank servers
+- **Authoritative:** Official IFC development finance data
+- **Comprehensive:** Covers sovereign, public, and private sector lending
+- **Historical:** Decades of credit cycle data for trend analysis
 
 ---
 
-## 🔐 Adding Authentication (Optional)
+## 💬 Example Queries
 
-To secure your MCP server with OAuth 2.1:
+Once connected, you can ask Claude natural questions like:
 
-### 1. Create OAuth metadata endpoint
-
-Create `api/.well-known/oauth-protected-resource/route.ts`:
-
-```typescript
-export default function handler(req, res) {
-  res.json({
-    "resource": "https://your-project.vercel.app/api/mcp",
-    "authorization_servers": ["https://your-auth-server.com"],
-    "scopes_supported": ["read:data"]
-  });
-}
+### Basic Queries
+```
+What's the default rate in Latin America?
+What's the recovery rate for sovereign debt in MENA?
+Show me credit risk statistics for East Asia
 ```
 
-### 2. Add authentication to MCP handler
-
-Update `api/mcp.ts`:
-
-```typescript
-import { withMcpAuth } from 'mcp-handler';
-
-// Wrap your handler with authentication
-export default withMcpAuth(handler, {
-  validateToken: async (token) => {
-    // Your token validation logic
-    // Return user info and scopes
-    return {
-      userId: 'user-123',
-      scopes: ['read:data']
-    };
-  },
-  requiredScopes: ['read:data'],
-  metadataPath: '/.well-known/oauth-protected-resource'
-});
+### Comparative Analysis
+```
+Compare default rates across all regions
+Which region has the highest recovery rates for private sector lending?
+Compare sovereign vs corporate default risk in Sub-Saharan Africa
 ```
 
----
-
-## 🎨 Customization
-
-### Add New Tools
-
-Edit `api/mcp.ts` and add tools using the pattern:
-
-```typescript
-server.tool(
-  'tool_name',
-  'Tool description',
-  {
-    parameter: z.string().describe('Parameter description')
-  },
-  async ({ parameter }) => {
-    // Your tool logic
-    return {
-      content: [{
-        type: 'text',
-        text: 'Your response'
-      }]
-    };
-  }
-);
+### Sector-Specific
+```
+What's the default rate for infrastructure projects?
+How risky is manufacturing sector lending in South Asia?
+Compare construction vs utilities sector credit risk
 ```
 
-### Modify Regions or Data
-
-Update the `REGION_NAMES` and `REGION_DISPLAY_NAMES` objects in `api/mcp.ts`.
-
----
-
-## 📈 Monitoring
-
-### View Logs
-
-1. Go to [Vercel Dashboard](https://vercel.com/dashboard)
-2. Select your project
-3. Click "Logs" tab
-4. See real-time function invocations and errors
-
-### Analytics
-
-Vercel automatically provides:
-- Function invocation counts
-- Error rates
-- Response times
-- Bandwidth usage
-
----
-
-## 💰 Pricing
-
-### Free Tier (Hobby Plan)
-- ✅ 100,000 serverless function invocations/month
-- ✅ 100 GB bandwidth
-- ✅ Perfect for testing and small-scale usage
-
-### Pro Plan ($20/month)
-- ✅ 1,000,000 invocations/month
-- ✅ 1 TB bandwidth
-- ✅ **Active CPU pricing** (only pay for actual execution time)
-- ✅ **For your MCP:** Estimated $20-25/month for 300k requests
-
-**Note:** Your MCP is I/O-bound (waiting for World Bank API), so Vercel's Active CPU pricing means you only pay for ~100ms of CPU per request, not the full wait time.
-
----
-
-## 🔄 Update Your MCP
-
-### From GitHub (Auto-Deploy)
-
-If you deployed from GitHub, Vercel automatically deploys when you push:
-
-```bash
-# Make changes to api/mcp.ts
-git add .
-git commit -m "Updated tools"
-git push
-
-# Vercel automatically deploys!
+### Time Series
+```
+Show me the 10-year default rate trend for global emerging markets
+How has MENA's recovery rate changed over the last 5 years?
+Track sovereign default rates from 2014-2024
 ```
 
-### Manual Deploy
-
-```bash
-# Deploy to production
-vercel --prod
-
-# Or deploy to preview (for testing)
-vercel
+### Advanced Queries
+```
+What's the recovery rate for senior infrastructure debt in Latin America?
+Compare greenfield vs expansion projects for default risk
+Analyze subordinated debt recovery across all regions
 ```
 
 ---
 
-## 🚨 Troubleshooting
+## 🔍 Understanding the Metrics
 
-### MCP Server Not Responding
+### Default Rate (ADR)
+**What it is:** Percentage of loans that default (fail to repay)
+**Interpretation:** Lower is better. 1% means 1 in 100 loans default.
+**Range:** Typically 0.5% - 5% for emerging markets
 
-1. Check Vercel logs for errors
-2. Verify URL: `https://your-project.vercel.app/api/mcp`
-3. Test health: `curl https://your-project.vercel.app/api/mcp`
+### Recovery Rate (ARR)
+**What it is:** Percentage of loan value recovered when defaults occur
+**Interpretation:** Higher is better. 80% means lenders recover 80 cents per dollar.
+**Range:** Typically 50% - 95% for emerging markets
 
-### World Bank API Timeout
+### Expected Loss
+**What it is:** Combined measure accounting for both default probability and loss severity
+**Calculation:** `Default Rate × (1 - Recovery Rate)`
+**Interpretation:** Overall expected loss on a portfolio. Lower is better.
 
-The MCP has automatic fallback to cached data. Check if:
-- World Bank API is down (try: `curl https://data360api.worldbank.org/data360/data?DATABASE_ID=IFC_GEM`)
-- Your function is timing out (Vercel default: 10s, increase if needed)
-
-### Cold Starts
-
-First request after idle may be slower (200-500ms). This is normal for serverless.
-
----
-
-## 📚 Resources
-
-- **Vercel MCP Docs:** https://vercel.com/docs/mcp
-- **mcp-handler Package:** npm package for MCP on Vercel
-- **World Bank Data360 API:** https://data360api.worldbank.org
-- **MCP Specification:** https://modelcontextprotocol.io
+**Example (MENA Region - Private Sector):**
+- Default Rate: 3.39%
+- Recovery Rate: 71.70%
+- Expected Loss: 3.39% × (1 - 0.717) = **0.96%**
 
 ---
 
-## 🎯 What's Different from Local Version?
+## 🚀 Quick Start Examples
 
-| Feature | Local (stdio) | Vercel (HTTP) |
-|---------|---------------|---------------|
-| **Transport** | stdio (standard I/O) | Streamable HTTP |
-| **Access** | Local only | Global URL |
-| **Deployment** | Manual setup | One-click deploy |
-| **Scaling** | Single instance | Auto-scaling |
-| **Updates** | Manual restart | Auto-deploy from Git |
-| **Cost** | Free (your machine) | $0-20/month |
-| **Handler** | MCP SDK directly | `mcp-handler` package |
+### Example 1: Regional Risk Comparison
+
+**You ask Claude:**
+```
+Compare the credit risk across all emerging market regions
+```
+
+**Claude uses:**
+- `compare_regions` tool with default and recovery metrics
+- Automatically formats the comparison table
+- Highlights high-risk vs low-risk regions
+
+### Example 2: Sector Deep-Dive
+
+**You ask Claude:**
+```
+I'm considering infrastructure lending in Latin America. What's the credit risk?
+```
+
+**Claude uses:**
+- `get_sector_analysis` for infrastructure sector in LAC region
+- `get_seniority_analysis` to show senior vs subordinated performance
+- Provides context comparing to other sectors
+
+### Example 3: Historical Trend Analysis
+
+**You ask Claude:**
+```
+Has credit risk in emerging markets improved over the last decade?
+```
+
+**Claude uses:**
+- `get_time_series` for 10-year global data
+- Analyzes default and recovery rate trends
+- Summarizes key changes and turning points
 
 ---
 
-## ✅ Deployment Checklist
+## 🎓 Tips for Best Results
 
-- [ ] Code pushed to GitHub (optional, but recommended)
-- [ ] Vercel project created
-- [ ] Deployed successfully
-- [ ] MCP URL working: `https://your-project.vercel.app/api/mcp`
-- [ ] Tested with MCP inspector or client
-- [ ] Added to Claude Desktop config (optional)
-- [ ] Custom domain configured (optional)
-- [ ] OAuth authentication added (optional)
+### Be Specific About Data Source
+When querying, specify which economic sector you're interested in:
+```
+What's the sovereign default rate in MENA?
+Show me private sector credit risk for East Asia
+Analyze public sector lending in Sub-Saharan Africa
+```
+
+### Combine Tools for Rich Analysis
+Claude can chain multiple tools together:
+```
+Compare infrastructure vs manufacturing credit risk across all regions,
+then show me the 5-year trend for the riskiest combination
+```
+
+### Use Natural Language
+You don't need to know the technical parameters:
+```
+❌ Don't say: "Use get_sector_analysis with REF_AREA=LAC and SECTOR=IFR"
+✅ Instead say: "What's the default rate for infrastructure in Latin America?"
+```
 
 ---
 
-## 🎉 Success!
+## 🔐 Data Privacy & Security
 
-Your GEMs Risk MCP is now live on Vercel!
+- **No authentication required** - World Bank data is publicly available
+- **No data storage** - Queries fetch real-time data from World Bank API
+- **No personal information** - All data is aggregated regional/sectoral statistics
+- **Read-only access** - The MCP can only read data, not modify anything
 
-**Next steps:**
-1. Share the URL with users
-2. Monitor usage in Vercel dashboard
-3. Consider adding OAuth for production
-4. Set up custom domain (optional)
+---
 
-**Questions?** Check the Vercel MCP documentation or open an issue.
+## 📚 Additional Resources
+
+### World Bank / IFC Resources
+- **IFC GEMs Database:** [World Bank Data360](https://data360.worldbank.org)
+- **IFC Development Impact:** [IFC.org](https://www.ifc.org)
+- **Emerging Markets Research:** [World Bank Open Data](https://data.worldbank.org)
+
+### Model Context Protocol (MCP)
+- **MCP Specification:** [modelcontextprotocol.io](https://modelcontextprotocol.io)
+- **Claude Desktop Setup:** [docs.anthropic.com](https://docs.anthropic.com)
+
+---
+
+## 🐛 Troubleshooting
+
+### "Tool not found" errors
+- Verify the MCP server is correctly configured in your client
+- Restart your MCP client (e.g., Claude Desktop)
+- Check that the server URL is correct
+
+### Slow responses
+- First query may take 2-3 seconds (World Bank API connection)
+- Subsequent queries are faster (server warm-up)
+- This is normal for real-time API data
+
+### "No data available" responses
+- World Bank API may be temporarily unavailable
+- The server has automatic fallback to cached data
+- Try again in a few moments
+
+### Connection issues
+- Verify your internet connection
+- Check that the server URL is accessible
+- Contact your administrator for server status
+
+---
+
+## 📞 Support
+
+### For Users
+- Contact your MCP server administrator for connection issues
+- Check this README for tool usage and examples
+
+### For Administrators
+- Review server logs for API or connection errors
+- Verify World Bank API accessibility: `curl https://data360api.worldbank.org/data360/data?DATABASE_ID=IFC_GEM`
+- Check MCP server health endpoint
+
+---
+
+## 📖 Version Information
+
+**Current Version:** 2.0
+**Data Coverage:** 1984-2024 (40 years)
+**Tools Available:** 9
+**Supported Regions:** 7
+**Economic Sectors:** 15
+**Data Sources:** 3 (Sovereign, Public, Private)
+**Total Indicators:** 6 of 11 implemented (54.5% coverage)
+
+---
+
+## ✨ What's New in Version 2.0
+
+- ✅ **Three Economic Sectors** - Added sovereign and private sector data sources
+- ✅ **Enhanced Tool Coverage** - Expanded from 5 to 9 specialized tools
+- ✅ **Smart Detection** - Automatic data source selection from query context
+- ✅ **Time Series Analysis** - Multi-year trend tracking
+- ✅ **Seniority Analysis** - Senior vs subordinated debt comparison
+- ✅ **Multidimensional Queries** - Complex cross-sector analysis
+
+---
+
+**Ready to explore emerging markets credit risk? Connect the MCP server and start asking Claude your questions!**
