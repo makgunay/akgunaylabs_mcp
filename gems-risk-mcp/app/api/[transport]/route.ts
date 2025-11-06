@@ -508,6 +508,61 @@ async function getSectorData(sectorCode: string, regionCode: string = "_T", proj
   };
 }
 
+// Fetch historical time series data
+interface TimeSeriesDataPoint {
+  year: string;
+  defaultRate: number;
+  recoveryRate?: number;
+}
+
+async function getTimeSeriesData(
+  regionCode: string = "_T",
+  sectorCode: string = "_T",
+  projectTypeCode: string = "_T",
+  startYear: number = 2014,
+  endYear: number = 2024
+): Promise<TimeSeriesDataPoint[] | { error: DataError }> {
+  const dataPoints: TimeSeriesDataPoint[] = [];
+
+  for (let year = startYear; year <= endYear; year++) {
+    const params = {
+      DATABASE_ID: IFC_GEM_DATASET,
+      INDICATOR: "IFC_GEM_PBD",
+      METRIC: "ADR",
+      REF_AREA: regionCode,
+      SECTOR: sectorCode,
+      PROJECT_TYPE: projectTypeCode,
+      TIME_PERIOD: year.toString(),
+    };
+
+    const result = await fetchData360(params);
+
+    if (result.success && result.data!.value.length > 0) {
+      const latestData = result.data!.value[0];
+      const defaultRate = parseFloat(latestData.OBS_VALUE);
+
+      if (defaultRate >= 0 && defaultRate <= 100) {
+        dataPoints.push({
+          year: year.toString(),
+          defaultRate
+        });
+      }
+    }
+  }
+
+  if (dataPoints.length === 0) {
+    return {
+      error: {
+        type: DataErrorType.NO_DATA,
+        message: `No historical data available for the specified parameters`,
+        suggestedAction: 'Try broader filters or a different time range'
+      }
+    };
+  }
+
+  return dataPoints;
+}
+
 // Fetch project type data from IFC_GEM_PBD indicator with comprehensive error handling
 async function getProjectTypeData(projectTypeCode: string, regionCode: string = "_T", sectorCode: string = "_T"): Promise<SectorDataResult | { error: DataError }> {
   const params = {
@@ -1309,6 +1364,82 @@ const handler = createMcpHandler(
           content: [{
             type: 'text',
             text: result
+          }]
+        };
+      }
+    );
+
+    // Tool 7: Time Series Analysis
+    server.tool(
+      'get_time_series',
+      'Analyze historical trends in credit risk metrics over time (1994-2024)',
+      {
+        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
+          .optional()
+          .describe('Region to analyze (defaults to global)'),
+        years: z.number()
+          .optional()
+          .describe('Number of recent years to analyze (default: 10)')
+      },
+      async ({ region = 'global', years = 10 }) => {
+        const regionCode = REGION_NAMES[region];
+        const currentYear = new Date().getFullYear();
+        const startYear = currentYear - years;
+
+        const result = await getTimeSeriesData(regionCode, "_T", "_T", startYear, currentYear);
+
+        if ('error' in result) {
+          return {
+            content: [{
+              type: 'text',
+              text: `⚠️ **Error retrieving time series data**\n\n${result.error.message}\n\n${result.error.suggestedAction || ''}`
+            }]
+          };
+        }
+
+        const dataPoints = result as TimeSeriesDataPoint[];
+
+        // Calculate trend
+        const firstYear = dataPoints[0];
+        const lastYear = dataPoints[dataPoints.length - 1];
+        const change = lastYear.defaultRate - firstYear.defaultRate;
+        const percentChange = ((change / firstYear.defaultRate) * 100).toFixed(1);
+        const trend = change > 0 ? '📈 Increasing' : change < 0 ? '📉 Decreasing' : '➡️ Stable';
+
+        // Calculate statistics
+        const rates = dataPoints.map(d => d.defaultRate);
+        const avgRate = (rates.reduce((sum, r) => sum + r, 0) / rates.length).toFixed(2);
+        const maxRate = Math.max(...rates).toFixed(2);
+        const minRate = Math.min(...rates).toFixed(2);
+
+        // Build result
+        let resultText = `# Historical Credit Risk Trend: ${REGION_DISPLAY_NAMES[regionCode]}\n\n`;
+        resultText += `**Period:** ${firstYear.year} - ${lastYear.year} (${years} years)\n\n`;
+
+        resultText += `## Summary Statistics\n\n`;
+        resultText += `- **Current Rate (${lastYear.year}):** ${lastYear.defaultRate.toFixed(2)}%\n`;
+        resultText += `- **Average Rate:** ${avgRate}%\n`;
+        resultText += `- **Highest Rate:** ${maxRate}%\n`;
+        resultText += `- **Lowest Rate:** ${minRate}%\n`;
+        resultText += `- **Change:** ${change > 0 ? '+' : ''}${change.toFixed(2)}% (${percentChange}%)\n`;
+        resultText += `- **Trend:** ${trend}\n\n`;
+
+        resultText += `## Year-by-Year Data\n\n`;
+        resultText += `| Year | Default Rate | Change |\n`;
+        resultText += `|------|--------------|--------|\n`;
+
+        dataPoints.forEach((point, index) => {
+          const yearChange = index > 0 ? point.defaultRate - dataPoints[index - 1].defaultRate : 0;
+          const changeStr = index > 0 ? `${yearChange > 0 ? '+' : ''}${yearChange.toFixed(2)}%` : '-';
+          resultText += `| ${point.year} | ${point.defaultRate.toFixed(2)}% | ${changeStr} |\n`;
+        });
+
+        resultText += `\n*Real-time data from World Bank Data360 IFC_GEM*`;
+
+        return {
+          content: [{
+            type: 'text',
+            text: resultText
           }]
         };
       }
