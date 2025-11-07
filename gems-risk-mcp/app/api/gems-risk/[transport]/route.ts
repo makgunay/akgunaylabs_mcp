@@ -1885,9 +1885,7 @@ const handler = createMcpHandler(
         };
       }
     );
-  },
-  undefined,
-  { basePath: "/api" }
+  }
 );
 
 // Export as named HTTP methods for MCP protocol (GET, POST, DELETE required)
