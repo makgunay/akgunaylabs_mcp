@@ -1,6 +1,6 @@
 export default function Home() {
-  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://your-server.vercel.app';
-  const mcpEndpoint = `${baseUrl}/api/mcp`;
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://mcp.akgunaylabs.io';
+  const mcpEndpoint = `${baseUrl}/api/gems-risk/mcp`;
 
   return (
     <main style={{

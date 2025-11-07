@@ -42,7 +42,11 @@ You can analyze default rates, recovery rates, expected losses, and historical t
 
 ### Prerequisites
 - Claude Desktop (or any MCP-compatible client)
-- The deployed MCP server URL (provided by your administrator)
+
+### MCP Server URL
+```
+https://mcp.akgunaylabs.io/api/gems-risk/mcp
+```
 
 ### Configuration Steps
 
@@ -63,16 +67,14 @@ You can analyze default rates, recovery rates, expected losses, and historical t
       "args": [
         "-y",
         "mcp-remote",
-        "https://YOUR-SERVER-URL/api/mcp"
+        "https://mcp.akgunaylabs.io/api/gems-risk/mcp"
       ]
     }
   }
 }
 ```
 
-3. **Replace `YOUR-SERVER-URL`** with the actual server URL provided to you
-
-4. **Restart Claude Desktop**
+3. **Restart Claude Desktop**
 
 #### Option 2: Direct HTTP Connection
 
@@ -82,7 +84,7 @@ If your MCP client supports direct HTTP connections:
 {
   "mcpServers": {
     "gems-risk": {
-      "url": "https://YOUR-SERVER-URL/api/mcp",
+      "url": "https://mcp.akgunaylabs.io/api/gems-risk/mcp",
       "transport": "streamable-http"
     }
   }
