@@ -1885,7 +1885,9 @@ const handler = createMcpHandler(
         };
       }
     );
-  }
+  },
+  undefined,
+  { basePath: "/api/gems-risk" }
 );
 
 // Export as named HTTP methods for MCP protocol (GET, POST, DELETE required)
