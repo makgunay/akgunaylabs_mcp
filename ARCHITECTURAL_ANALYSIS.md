@@ -1,7 +1,39 @@
 # MCP Deployment Architecture: Deep Analysis
 
-**Date:** November 5, 2025
+**Date:** November 8, 2025 (latest update)
 **Context:** Choosing between Next.js + mcp-handler vs Raw MCP SDK for GEMs Risk MCP
+
+---
+
+## November 2025 Code Review Refresh
+
+The latest repository review highlighted several structural and operational issues that should inform ongoing architecture decisions. A delivery-ready implementation plan now lives in `MCP_EFFICIENCY_AND_RISK_ROADMAP.md`, complete with prioritisation table, acceptance metrics, and copy-paste implementation prompts for each remediation task.
+
+### Architecture snapshot
+- The deployed application is a **Next.js 14** project with a marketing splash page and the `/gems-risk` product page rendered via server components with substantial inline styling.
+- MCP capabilities are implemented in a **single API route** at `app/api/gems-risk/[transport]/route.ts`, registering nine tools through `createMcpHandler` with both live Data360 calls and mock fallbacks.
+
+### Efficiency & performance concerns
+- Each module instantiation creates an in-memory `Map` cache plus a `setInterval` cleanup timer. In serverless runtimes this pattern yields redundant timers and wasted work; prefer lazy cleanup or eviction-on-write.
+- Several data fetch helpers sort full result sets to obtain the most recent record. Replace sort-and-slice with a single pass to track the maximum period for `O(n)` behaviour.
+- Historical lookups perform sequential `await`s over multi-year ranges. Batch or parallelise requests (e.g., `Promise.all`) to shrink latency.
+- Indicator requests pin `TIME_PERIOD: "2024"`; they will stale as new data arrives. Implement automatic “latest period” detection via MRV or metadata queries.
+
+### Potential bugs & risky behaviour
+- `getRegionData` currently always queries the **private-sector** indicator (`IFC_GEM_PRD_H`) even for sovereign/public requests, causing inconsistent comparisons across datasets.
+- The multidimensional analysis tool ignores `data_source` when resolving recovery rates, defaulting to public-sector metrics even for sovereign/private queries.
+- The marketing page references `window.location` inside a server component. During SSR this resolves to `undefined`, so the code falls back to the production URL and breaks local/preview environments.
+- The monolithic `route.ts` now exceeds 1,800 lines, increasing maintenance risk and making cross-tool regressions harder to spot. Plan for modularisation.
+
+### Alignment with best practices
+- `package.json` exposes no automated test scripts; introduce linting, type-check, and integration test commands to catch regressions.
+- Avoid long-lived timers in serverless contexts; use request-scoped caches or TTL checks.
+- Extract shared logic (indicator selection, attribution text, error handling) into utilities to simplify reasoning about each tool.
+
+### Testing recommendations
+- Add integration tests (Vitest/Jest + Supertest) covering every MCP tool with mocked Data360 responses, validating success and fallback paths.
+- Create contract tests ensuring each `data_source` combination uses the correct indicators/metrics (sovereign vs public vs private) to prevent dataset mix-ups.
+- Implement smoke tests for `/gems-risk` to verify the rendered endpoint respects deployment environments and doesn’t rely on server-only globals.
 
 ---
 
