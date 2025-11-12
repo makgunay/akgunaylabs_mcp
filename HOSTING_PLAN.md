@@ -117,6 +117,22 @@ User's Browser/Client
 
 **BEST FOR:** Your GEMs Risk MCP (read-only API queries, no state needed)
 
+#### Vercel Analytics Integration (Recommended if deploying on Vercel)
+
+If you choose Vercel for hosting, enable **Vercel Analytics** to gain real-time visibility into MCP request volume and user experience without maintaining a separate metrics stack.
+
+- **What you get:** Core Web Vitals, Speed Insights, and privacy-friendly Web Analytics aggregated automatically from your deployment.
+- **Enablement:** Run `vercel analytics enable` (CLI) or toggle **Analytics** in the project dashboard. No code changes are required for Node.js/Edge functions.
+- **Dashboards:** View analytics under **Analytics → Web** (traffic & referrers) and **Analytics → Speed Insights** (performance, Core Web Vitals).
+- **Alerts & retention:** Usage-based retention (30 days on Pro by default) with upgrade paths for longer history; you can export reports for governance reviews.
+- **Data privacy:** Built-in EU data residency options and first-party data collection meet compliance needs for World Bank-aligned projects.
+
+**How this helps:**
+
+- Monitor adoption as you onboard external users to the hosted MCP.
+- Catch latency regressions that might stem from upstream World Bank API slowdowns.
+- Support stakeholder reporting by exporting traffic and performance summaries during quarterly reviews.
+
 ---
 
 ### Architecture 2: **Container/Persistent Service**

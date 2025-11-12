@@ -1,4 +1,7 @@
 import { ReactNode } from 'react';
+import Script from 'next/script';
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 export const metadata = {
   title: 'GEMs Risk MCP Server',
@@ -12,7 +15,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        {isProduction ? (
+          <Script src="/_vercel/insights/script.js" strategy="afterInteractive" />
+        ) : null}
+      </body>
     </html>
   );
 }
