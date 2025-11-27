@@ -77,20 +77,69 @@ const SENIORITY_NAMES: Record<string, string> = {
 type DataSource = 'sovereign' | 'public' | 'private';
 
 // Indicator mapping for sovereign, public, and private sector data
-const INDICATOR_MAP: Record<DataSource, { default: string; recovery: string }> = {
+const INDICATOR_MAP: Record<DataSource, { default: string; recovery: string; historical: string }> = {
   sovereign: {
     default: "IFC_GEM_SD",    // Sovereign default rates
-    recovery: "IFC_GEM_SR"    // Sovereign recovery rates
+    recovery: "IFC_GEM_SR",   // Sovereign recovery rates
+    historical: "IFC_GEM_SD_H" // Sovereign historical data (counts, volumes)
   },
   public: {
     default: "IFC_GEM_PBD",   // Public sector default rates
-    recovery: "IFC_GEM_PBR"   // Public sector recovery rates
+    recovery: "IFC_GEM_PBR",  // Public sector recovery rates
+    historical: "IFC_GEM_PBD_H" // Public sector historical data (counts, volumes)
   },
   private: {
     default: "IFC_GEM_PRD",   // Private sector default rates
-    recovery: "IFC_GEM_PRR"   // Private sector recovery rates
+    recovery: "IFC_GEM_PRR",  // Private sector recovery rates
+    historical: "IFC_GEM_PRD_H" // Private sector historical data (counts, volumes)
   }
 };
+
+// Configuration constants (avoid magic numbers)
+const CONFIG = {
+  CACHE_TTL_MS: 300_000,      // 5 minutes cache TTL
+  API_TIMEOUT_MS: 30_000,     // 30 second API timeout
+  MAX_CACHE_SIZE: 1000,       // Maximum cache entries before cleanup
+  LAZY_CLEANUP_THRESHOLD: 100, // Cleanup every N cache accesses
+} as const;
+
+// Track cache access count for lazy cleanup
+let cacheAccessCount = 0;
+
+/**
+ * Get the latest available data period (year).
+ * Uses current year, with fallback logic for early-year data availability.
+ * IFC GEMs data typically updates mid-year, so in Q1 we may need previous year.
+ *
+ * @returns The year string to use for TIME_PERIOD queries
+ */
+function getLatestPeriod(): string {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1; // 0-indexed
+
+  // If we're in Q1 (Jan-Mar), data for current year likely isn't available yet
+  // Use previous year to ensure we get data
+  if (currentMonth <= 3) {
+    return (currentYear - 1).toString();
+  }
+
+  return currentYear.toString();
+}
+
+// Cache the latest period to avoid recalculating on every request
+let cachedLatestPeriod: string | null = null;
+let periodCacheTimestamp: number = 0;
+const PERIOD_CACHE_TTL_MS = 3600_000; // Refresh period calculation hourly
+
+function getLatestPeriodCached(): string {
+  const now = Date.now();
+  if (!cachedLatestPeriod || (now - periodCacheTimestamp) >= PERIOD_CACHE_TTL_MS) {
+    cachedLatestPeriod = getLatestPeriod();
+    periodCacheTimestamp = now;
+  }
+  return cachedLatestPeriod;
+}
 
 // Data source characteristics for attribution
 const DATA_SOURCE_INFO: Record<DataSource, { label: string; description: string; sampleSize: string }> = {
@@ -246,7 +295,6 @@ interface CacheEntry {
 }
 
 const apiCache = new Map<string, CacheEntry>();
-const CACHE_TTL = 300000; // 5 minutes in milliseconds
 
 // Generate cache key from API parameters
 function getCacheKey(params: Record<string, string>): string {
@@ -255,25 +303,49 @@ function getCacheKey(params: Record<string, string>): string {
   return sortedKeys.map(key => `${key}=${params[key]}`).join('&');
 }
 
-// Cleanup expired cache entries periodically
-function cleanupCache() {
+// Lazy cleanup: remove expired entries on access (serverless-safe, no timers)
+function lazyCleanupCache(): void {
+  cacheAccessCount++;
+
+  // Only cleanup periodically to avoid performance overhead on every access
+  if (cacheAccessCount < CONFIG.LAZY_CLEANUP_THRESHOLD) {
+    return;
+  }
+
+  cacheAccessCount = 0;
   const now = Date.now();
   let removed = 0;
 
   for (const [key, entry] of apiCache.entries()) {
-    if (now - entry.timestamp >= CACHE_TTL) {
+    if (now - entry.timestamp >= CONFIG.CACHE_TTL_MS) {
+      apiCache.delete(key);
+      removed++;
+    }
+  }
+
+  // Also enforce max cache size to prevent memory growth
+  if (apiCache.size > CONFIG.MAX_CACHE_SIZE) {
+    // Remove oldest entries first
+    const entries = Array.from(apiCache.entries())
+      .sort((a, b) => a[1].timestamp - b[1].timestamp);
+
+    const toRemove = entries.slice(0, apiCache.size - CONFIG.MAX_CACHE_SIZE);
+    for (const [key] of toRemove) {
       apiCache.delete(key);
       removed++;
     }
   }
 
   if (removed > 0) {
-    console.log(`Cache cleanup: removed ${removed} expired entries`);
+    console.log(`Cache cleanup (lazy): removed ${removed} entries, ${apiCache.size} remaining`);
   }
 }
 
-// Run cache cleanup every 10 minutes
-setInterval(cleanupCache, 600000);
+// Check if a cache entry is valid (not expired)
+function isCacheValid(entry: CacheEntry | undefined): entry is CacheEntry {
+  if (!entry) return false;
+  return (Date.now() - entry.timestamp) < CONFIG.CACHE_TTL_MS;
+}
 
 // Smart prompt interpretation for data source selection
 function interpretDataSource(promptText?: string, explicitSource?: DataSource): DataSource {
@@ -364,14 +436,16 @@ function getDataSourceAttribution(dataSource: DataSource): string {
 // API Client Functions with comprehensive error handling
 async function fetchData360(
   params: Record<string, string>,
-  timeout: number = 30000
+  timeout: number = CONFIG.API_TIMEOUT_MS
 ): Promise<DataResult<Data360Response>> {
+  // Trigger lazy cache cleanup periodically (serverless-safe)
+  lazyCleanupCache();
+
   // Check cache first
   const cacheKey = getCacheKey(params);
   const cached = apiCache.get(cacheKey);
-  const now = Date.now();
 
-  if (cached && (now - cached.timestamp) < CACHE_TTL) {
+  if (isCacheValid(cached)) {
     console.log(`Cache hit for: ${cacheKey}`);
     return { success: true, data: cached.data };
   }
@@ -456,7 +530,7 @@ async function fetchData360(
     // Store in cache
     apiCache.set(cacheKey, {
       data,
-      timestamp: now
+      timestamp: Date.now()
     });
 
     console.log(`Cache miss - fetched and cached: ${cacheKey}`);
@@ -501,7 +575,7 @@ async function getRecoveryRateData(apiCode: string, dataSource: DataSource = 'pu
     SECTOR: "_T",               // Overall (all sectors)
     PROJECT_TYPE: "_T",         // All project types
     SENIORITY: "_T",            // All seniority levels
-    TIME_PERIOD: "2024",
+    TIME_PERIOD: getLatestPeriodCached(),
   };
 
   const result = await fetchData360(recoveryParams);
@@ -579,7 +653,7 @@ async function getSectorData(sectorCode: string, regionCode: string = "_T", proj
     REF_AREA: regionCode,
     SECTOR: sectorCode,
     PROJECT_TYPE: projectTypeCode,
-    TIME_PERIOD: "2024",
+    TIME_PERIOD: getLatestPeriodCached(),
   };
 
   const result = await fetchData360(sectorParams);
@@ -698,7 +772,7 @@ async function getSeniorityRecoveryData(seniorityCode: string, regionCode: strin
     SECTOR: "_T",
     PROJECT_TYPE: "_T",
     SENIORITY: seniorityCode,  // SS or SU
-    TIME_PERIOD: "2024",
+    TIME_PERIOD: getLatestPeriodCached(),
   };
 
   const result = await fetchData360(recoveryParams);
@@ -742,7 +816,7 @@ async function getProjectTypeData(projectTypeCode: string, regionCode: string = 
     REF_AREA: regionCode,
     SECTOR: sectorCode,
     PROJECT_TYPE: projectTypeCode,
-    TIME_PERIOD: "2024",
+    TIME_PERIOD: getLatestPeriodCached(),
   };
 
   const result = await fetchData360(params);
@@ -811,27 +885,29 @@ async function getRegionData(region: string, dataSource: DataSource = 'public'):
       METRIC: "ADR",
       REF_AREA: apiCode,
       SECTOR: "_T",  // Overall (all sectors)
-      TIME_PERIOD: "2024",
+      TIME_PERIOD: getLatestPeriodCached(),
     };
 
     // Fetch loan counts - using CP (Counterparts) metric
+    // Use appropriate historical indicator based on data source (fixes indicator mismatch bug)
     const countParams = {
       DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: "IFC_GEM_PRD_H",  // Historical private default rates dataset
+      INDICATOR: INDICATOR_MAP[dataSource].historical,  // Use data source-appropriate historical indicator
       METRIC: "CP",  // CP = Counterparts (count of entities)
       REF_AREA: apiCode,
       SECTOR: "_T",
-      TIME_PERIOD: "2024",
+      TIME_PERIOD: getLatestPeriodCached(),
     };
 
     // Fetch loan volumes - using SA (Signed Amount) metric
+    // Use appropriate historical indicator based on data source (fixes indicator mismatch bug)
     const volumeParams = {
       DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: "IFC_GEM_PRD_H",
+      INDICATOR: INDICATOR_MAP[dataSource].historical,  // Use data source-appropriate historical indicator
       METRIC: "SA",  // SA = Signed Amount
       REF_AREA: apiCode,
       SECTOR: "_T",
-      TIME_PERIOD: "2024",
+      TIME_PERIOD: getLatestPeriodCached(),
     };
 
     const [defaultResult, countResult, volumeResult] = await Promise.all([
@@ -1789,7 +1865,7 @@ const handler = createMcpHandler(
           REF_AREA: regionCode,
           SECTOR: sectorCode,
           PROJECT_TYPE: projectTypeCode,
-          TIME_PERIOD: "2024",
+          TIME_PERIOD: getLatestPeriodCached(),
         };
 
         const result = await fetchData360(params);
@@ -1830,8 +1906,8 @@ const handler = createMcpHandler(
         const latestData = result.data!.value[0];
         const defaultRate = parseFloat(latestData.OBS_VALUE);
 
-        // Get recovery rate for this region
-        const recoveryResult = await getRecoveryRateData(regionCode);
+        // Get recovery rate for this region using the correct data source (fixes data source mismatch bug)
+        const recoveryResult = await getRecoveryRateData(regionCode, dataSource);
         const recoveryRate = recoveryResult.success ? recoveryResult.data! : estimateRecoveryRate(defaultRate);
         const isRecoveryEstimated = !recoveryResult.success;
 
