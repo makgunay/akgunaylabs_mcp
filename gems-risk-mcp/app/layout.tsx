@@ -1,7 +1,5 @@
 import { ReactNode } from 'react';
-import Script from 'next/script';
-
-const isProduction = process.env.NODE_ENV === 'production';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 
 export const metadata = {
   title: 'GEMs Risk MCP Server',
@@ -17,9 +15,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         {children}
-        {isProduction ? (
-          <Script src="/_vercel/insights/script.js" strategy="afterInteractive" />
-        ) : null}
+        <SpeedInsights />
       </body>
     </html>
   );
