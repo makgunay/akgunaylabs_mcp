@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+.next/
+
+# Environment
+.env
+.env.local
+
+# Internal research & analysis docs
+/docs/
+
+# Vercel
+.vercel
+
+# OS
+.DS_Store
