@@ -26,16 +26,23 @@ A Model Context Protocol server that provides access to the GEMs (Global Emergin
 ```
 akgunaylabs_mcp/
 ├── README.md (this file)
-├── gems-risk-mcp/          # GEMs Risk Database MCP
-│   ├── src/
-│   ├── package.json
-│   └── README.md
-└── [future-mcp-folders]/   # Additional MCPs will be added here
+├── USAGE_GUIDE.md
+├── .gitignore
+└── gems-risk-mcp/          # GEMs Risk Database MCP
+    ├── app/                 # Next.js App Router
+    │   ├── api/gems-risk/   # MCP server endpoint
+    │   ├── page.tsx         # Landing page
+    │   └── gems-risk/       # Documentation page
+    ├── package.json
+    ├── next.config.js
+    └── README.md
 ```
 
 ## Getting Started
 
 Each MCP server is in its own directory with its own README and setup instructions. Navigate to the specific MCP folder to get started.
+
+The server is deployed at [mcp.akgunaylabs.io](https://mcp.akgunaylabs.io).
 
 ## Contributing
 
