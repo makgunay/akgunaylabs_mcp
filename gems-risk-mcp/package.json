@@ -1,6 +1,6 @@
 {
   "name": "gems-risk-mcp-vercel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "GEMs Risk MCP Server deployed on Vercel with Next.js",
   "scripts": {
     "dev": "next dev",
