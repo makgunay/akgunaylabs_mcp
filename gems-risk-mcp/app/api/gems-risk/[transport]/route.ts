@@ -1,1970 +1,638 @@
 import { createMcpHandler } from 'mcp-handler';
 import { z } from 'zod';
+import {
+  DATA_SOURCES,
+  DATA_SOURCE_INFO,
+  PROJECT_TYPES,
+  PROJECT_TYPE_KEYS,
+  PROJECT_TYPE_NAMES,
+  AREAS,
+  AREA_KEYS,
+  AREA_NAMES,
+  COUNTRY_NAMES,
+  INCOME_GROUPS,
+  REGIONS,
+  resolveCountry,
+  SECTORS,
+  SECTOR_KEYS,
+  SECTOR_NAMES,
+  SENIORITY_NAMES,
+  type DataSource,
+} from '@/lib/gems-risk/catalog';
+import { Data360Error } from '@/lib/gems-risk/data360';
+import { GLOBAL_TOTAL, getHistory, getRates, type RateStat, type Selection, type Slice } from '@/lib/gems-risk/stats';
+import pkg from '@/package.json';
 
-// World Bank Data360 API Configuration
-const DATA360_API_BASE = "https://data360api.worldbank.org";
-const IFC_GEM_DATASET = "IFC_GEM";
+// Vercel function limit; Data360 calls are cached, but a cold call may chain several requests.
+export const maxDuration = 60;
 
-// Region code mapping
-const REGION_NAMES: Record<string, string> = {
-  "global": "_T",
-  "east-asia": "EAS",
-  "europe-central-asia": "ECS",
-  "latin-america": "LCN",
-  "mena": "MEA",
-  "south-asia": "SAS",
-  "sub-saharan-africa": "SSF",
-};
+type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
-const REGION_DISPLAY_NAMES: Record<string, string> = {
-  "_T": "Global Emerging Markets",
-  "EAS": "East Asia & Pacific",
-  "ECS": "Europe & Central Asia",
-  "LCN": "Latin America & Caribbean",
-  "MEA": "Middle East & North Africa",
-  "SAS": "South Asia",
-  "SSF": "Sub-Saharan Africa",
-};
+const SOURCE_DESCRIPTION =
+  'Data sources: "sovereign" (sovereign and sovereign-guaranteed debt), "public" (sub-sovereign public sector), ' +
+  '"private" (corporate/private sector, largest sample). Default: public.';
 
-// Sector code mapping (GICS + IFC categories)
-const SECTOR_NAMES: Record<string, string> = {
-  "_T": "Overall",
-  "_Z": "Not applicable",
-  // IFC-specific categories
-  "NF": "Non-financial institutions",
-  "FI": "Financial Institutions",
-  "BK": "Banking",
-  "IN": "Infrastructure",
-  "NB": "Non-banking financial institutions",
-  "R": "Renewables",
-  "S": "Services",
-  // GICS (Global Industry Classification Standard) sectors
-  "F": "GICS: Financials",
-  "U": "GICS: Utilities",
-  "I": "GICS: Industrials",
-  "CST": "GICS: Consumer Staples",
-  "CD": "GICS: Consumer Discretionary",
-  "M": "GICS: Materials",
-  "O": "GICS: Others",
-  "CS": "GICS: Communication Services",
-  "HC": "GICS: Health Care",
-  "E": "GICS: Energy",
-  "RE": "GICS: Real Estate",
-  "IT": "GICS: Information Technology",
-  "A": "GICS: Administration",
-};
+const dataSourceParam = z.enum(DATA_SOURCES).optional().describe(SOURCE_DESCRIPTION);
+const regionParam = z.enum(AREA_KEYS);
+const READ_ONLY = { readOnlyHint: true, openWorldHint: true } as const;
 
-// Project type mapping
-const PROJECT_TYPE_NAMES: Record<string, string> = {
-  "_Z": "Not applicable",
-  "_T": "Overall, incl. omitted categories",
-  "O": "Other",
-  "CF": "Corporate Finance",
-  "FI": "Financial Institutions",
-  "PF": "Project Finance",
-  "SF": "Structured Finance",
-  "MX": "Mixed",
-};
+const pct = (value: number) => `${value.toFixed(2)}%`;
 
-// Seniority mapping (debt hierarchy)
-const SENIORITY_NAMES: Record<string, string> = {
-  "_T": "All Seniority Levels",
-  "SS": "Senior Secured",
-  "SU": "Senior Unsecured",
-};
-
-// Data source types
-type DataSource = 'sovereign' | 'public' | 'private';
-
-// Indicator mapping for sovereign, public, and private sector data
-const INDICATOR_MAP: Record<DataSource, { default: string; recovery: string; historical: string }> = {
-  sovereign: {
-    default: "IFC_GEM_SD",    // Sovereign default rates
-    recovery: "IFC_GEM_SR",   // Sovereign recovery rates
-    historical: "IFC_GEM_SD_H" // Sovereign historical data (counts, volumes)
-  },
-  public: {
-    default: "IFC_GEM_PBD",   // Public sector default rates
-    recovery: "IFC_GEM_PBR",  // Public sector recovery rates
-    historical: "IFC_GEM_PBD_H" // Public sector historical data (counts, volumes)
-  },
-  private: {
-    default: "IFC_GEM_PRD",   // Private sector default rates
-    recovery: "IFC_GEM_PRR",  // Private sector recovery rates
-    historical: "IFC_GEM_PRD_H" // Private sector historical data (counts, volumes)
-  }
-};
-
-// Configuration constants (avoid magic numbers)
-const CONFIG = {
-  CACHE_TTL_MS: 300_000,      // 5 minutes cache TTL
-  API_TIMEOUT_MS: 30_000,     // 30 second API timeout
-  MAX_CACHE_SIZE: 1000,       // Maximum cache entries before cleanup
-  LAZY_CLEANUP_THRESHOLD: 100, // Cleanup every N cache accesses
-} as const;
-
-// Track cache access count for lazy cleanup
-let cacheAccessCount = 0;
-
-/**
- * Get the latest available data period (year).
- * Uses current year, with fallback logic for early-year data availability.
- * IFC GEMs data typically updates mid-year, so in Q1 we may need previous year.
- *
- * @returns The year string to use for TIME_PERIOD queries
- */
-function getLatestPeriod(): string {
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1; // 0-indexed
-
-  // If we're in Q1 (Jan-Mar), data for current year likely isn't available yet
-  // Use previous year to ensure we get data
-  if (currentMonth <= 3) {
-    return (currentYear - 1).toString();
-  }
-
-  return currentYear.toString();
+function text(body: string, isError = false): ToolResult {
+  return isError ? { content: [{ type: 'text', text: body }], isError } : { content: [{ type: 'text', text: body }] };
 }
 
-// Cache the latest period to avoid recalculating on every request
-let cachedLatestPeriod: string | null = null;
-let periodCacheTimestamp: number = 0;
-const PERIOD_CACHE_TTL_MS = 3600_000; // Refresh period calculation hourly
-
-function getLatestPeriodCached(): string {
-  const now = Date.now();
-  if (!cachedLatestPeriod || (now - periodCacheTimestamp) >= PERIOD_CACHE_TTL_MS) {
-    cachedLatestPeriod = getLatestPeriod();
-    periodCacheTimestamp = now;
-  }
-  return cachedLatestPeriod;
-}
-
-// Data source characteristics for attribution
-const DATA_SOURCE_INFO: Record<DataSource, { label: string; description: string; sampleSize: string }> = {
-  sovereign: {
-    label: "SOVEREIGN dataset (IFC_GEM_SD/SR)",
-    description: "Sovereign debt (national governments, sovereign bonds)",
-    sampleSize: "~4,889 default observations, ~46 recovery observations (largest dataset)"
-  },
-  public: {
-    label: "PUBLIC SECTOR dataset (IFC_GEM_PBD/PBR)",
-    description: "Sub-sovereign public sector lending (regional/local government, public entities)",
-    sampleSize: "~619 default observations, ~172 recovery observations"
-  },
-  private: {
-    label: "PRIVATE SECTOR dataset (IFC_GEM_PRD/PRR)",
-    description: "Private sector lending (corporate, financial institutions, projects)",
-    sampleSize: "~2,853 default observations, ~1,269 recovery observations"
-  }
-};
-
-// Mock data for fallback
-const mockCreditData: Record<string, any> = {
-  global: {
-    region: "Global Emerging Markets",
-    defaultRate: 3.5,
-    recoveryRate: 73,
-    numberOfLoans: 15420,
-    totalVolume: 425e9,
-    period: "1994-2024",
-  },
-  "east-asia": {
-    region: "East Asia & Pacific",
-    defaultRate: 2.8,
-    recoveryRate: 76,
-    numberOfLoans: 4200,
-    totalVolume: 145e9,
-    period: "1994-2024",
-  },
-  "latin-america": {
-    region: "Latin America & Caribbean",
-    defaultRate: 4.2,
-    recoveryRate: 68,
-    numberOfLoans: 3800,
-    totalVolume: 120e9,
-    period: "1994-2024",
-  },
-  "sub-saharan-africa": {
-    region: "Sub-Saharan Africa",
-    defaultRate: 5.1,
-    recoveryRate: 65,
-    numberOfLoans: 2600,
-    totalVolume: 85e9,
-    period: "1994-2024",
-  },
-  "south-asia": {
-    region: "South Asia",
-    defaultRate: 3.9,
-    recoveryRate: 70,
-    numberOfLoans: 2400,
-    totalVolume: 75e9,
-    period: "1994-2024",
-  },
-  "mena": {
-    region: "Middle East & North Africa",
-    defaultRate: 3.2,
-    recoveryRate: 72,
-    numberOfLoans: 1800,
-    totalVolume: 68e9,
-    period: "1994-2024",
-  },
-  "europe-central-asia": {
-    region: "Europe & Central Asia",
-    defaultRate: 3.0,
-    recoveryRate: 75,
-    numberOfLoans: 620,
-    totalVolume: 42e9,
-    period: "1994-2024",
-  },
-};
-
-// Mock sector data kept as fallback only
-const mockSectorData = [
-  { sector: "Financial Services", defaultRate: 2.8, recoveryRate: 78, avgLoanSize: 32e6 },
-  { sector: "Infrastructure", defaultRate: 3.1, recoveryRate: 75, avgLoanSize: 85e6 },
-  { sector: "Manufacturing", defaultRate: 3.6, recoveryRate: 72, avgLoanSize: 28e6 },
-  { sector: "Services", defaultRate: 4.0, recoveryRate: 70, avgLoanSize: 22e6 },
-  { sector: "Agriculture", defaultRate: 4.8, recoveryRate: 65, avgLoanSize: 18e6 },
-  { sector: "Energy", defaultRate: 3.3, recoveryRate: 74, avgLoanSize: 95e6 },
-  { sector: "Health & Education", defaultRate: 2.9, recoveryRate: 76, avgLoanSize: 25e6 },
-];
-
-// Data360 API Response Types
-interface Data360Response {
-  value: Array<{
-    TIME_PERIOD: string;
-    OBS_VALUE: string;
-    [key: string]: any;
-  }>;
-}
-
-// Error handling types
-enum DataErrorType {
-  NETWORK_ERROR = 'network_error',
-  TIMEOUT = 'timeout',
-  RATE_LIMITED = 'rate_limited',
-  NO_DATA = 'no_data',
-  INVALID_DATA = 'invalid_data',
-  STALE_DATA = 'stale_data',
-  MALFORMED_RESPONSE = 'malformed_response',
-  API_ERROR = 'api_error',
-}
-
-interface DataError {
-  type: DataErrorType;
-  message: string;
-  details?: any;
-  suggestedAction?: string;
-}
-
-interface DataResult<T> {
-  success: boolean;
-  data?: T;
-  error?: DataError;
-  approximated?: boolean;
-  approximationMethod?: string;
-}
-
-interface RegionDataResult {
-  region: string;
-  defaultRate: number;
-  recoveryRate: number;
-  numberOfLoans: number;
-  totalVolume: number;
-  period: string;
-  isRecoveryEstimated: boolean;
-  recoveryError?: DataError;
-}
-
-interface SectorDataResult {
-  sectorCode: string;
-  sectorName: string;
-  defaultRate: number;
-  recoveryRate: number;
-  isRecoveryEstimated: boolean;
-  recoveryError?: DataError;
-  period: string;
-}
-
-// Cache configuration
-interface CacheEntry {
-  data: Data360Response;
-  timestamp: number;
-}
-
-const apiCache = new Map<string, CacheEntry>();
-
-// Generate cache key from API parameters
-function getCacheKey(params: Record<string, string>): string {
-  // Sort keys to ensure consistent cache keys
-  const sortedKeys = Object.keys(params).sort();
-  return sortedKeys.map(key => `${key}=${params[key]}`).join('&');
-}
-
-// Lazy cleanup: remove expired entries on access (serverless-safe, no timers)
-function lazyCleanupCache(): void {
-  cacheAccessCount++;
-
-  // Only cleanup periodically to avoid performance overhead on every access
-  if (cacheAccessCount < CONFIG.LAZY_CLEANUP_THRESHOLD) {
-    return;
-  }
-
-  cacheAccessCount = 0;
-  const now = Date.now();
-  let removed = 0;
-
-  for (const [key, entry] of apiCache.entries()) {
-    if (now - entry.timestamp >= CONFIG.CACHE_TTL_MS) {
-      apiCache.delete(key);
-      removed++;
-    }
-  }
-
-  // Also enforce max cache size to prevent memory growth
-  if (apiCache.size > CONFIG.MAX_CACHE_SIZE) {
-    // Remove oldest entries first
-    const entries = Array.from(apiCache.entries())
-      .sort((a, b) => a[1].timestamp - b[1].timestamp);
-
-    const toRemove = entries.slice(0, apiCache.size - CONFIG.MAX_CACHE_SIZE);
-    for (const [key] of toRemove) {
-      apiCache.delete(key);
-      removed++;
-    }
-  }
-
-  if (removed > 0) {
-    console.log(`Cache cleanup (lazy): removed ${removed} entries, ${apiCache.size} remaining`);
-  }
-}
-
-// Check if a cache entry is valid (not expired)
-function isCacheValid(entry: CacheEntry | undefined): entry is CacheEntry {
-  if (!entry) return false;
-  return (Date.now() - entry.timestamp) < CONFIG.CACHE_TTL_MS;
-}
-
-// Smart prompt interpretation for data source selection
-function interpretDataSource(promptText?: string, explicitSource?: DataSource): DataSource {
-  // If explicit source provided, use it
-  if (explicitSource) {
-    return explicitSource;
-  }
-
-  // If no prompt text, default to public for backward compatibility
-  if (!promptText) {
-    return 'public';
-  }
-
-  const lowerPrompt = promptText.toLowerCase();
-
-  // Trigger words for SOVEREIGN data (SD/SR)
-  const sovereignTriggers = [
-    'sovereign',
-    'sovereign debt',
-    'national government',
-    'government bond',
-    'country risk',
-    'sovereign bond',
-    'sovereign risk',
-    'country default',
-    'ifc_gem_sd',
-    'ifc_gem_sr'
-  ];
-
-  // Trigger words for PRIVATE data (PRD/PRR)
-  const privateTriggers = [
-    'private sector',
-    'corporate',
-    'business',
-    'company',
-    'firm',
-    'enterprise',
-    'ifc_gem_prd',
-    'ifc_gem_prr'
-  ];
-
-  // Trigger words for PUBLIC data (PBD/PBR)
-  const publicTriggers = [
-    'public sector',
-    'sub-sovereign',
-    'municipal',
-    'regional government',
-    'local government',
-    'public entity',
-    'ifc_gem_pbd',
-    'ifc_gem_pbr'
-  ];
-
-  // Check for sovereign triggers (highest priority - most specific)
-  for (const trigger of sovereignTriggers) {
-    if (lowerPrompt.includes(trigger)) {
-      return 'sovereign';
-    }
-  }
-
-  // Check for private triggers
-  for (const trigger of privateTriggers) {
-    if (lowerPrompt.includes(trigger)) {
-      return 'private';
-    }
-  }
-
-  // Check for public triggers
-  for (const trigger of publicTriggers) {
-    if (lowerPrompt.includes(trigger)) {
-      return 'public';
-    }
-  }
-
-  // Default to public for backward compatibility
-  return 'public';
-}
-
-// Generate data source attribution text
-function getDataSourceAttribution(dataSource: DataSource): string {
-  const info = DATA_SOURCE_INFO[dataSource];
-  const alternative: DataSource = dataSource === 'public' ? 'private' : 'public';
-  const altInfo = DATA_SOURCE_INFO[alternative];
-
-  return `*Data Source: ${info.label}*\n*Characteristics: ${info.description}, ${info.sampleSize}*\n*Alternative: ${altInfo.label} available (use data_source="${alternative}")*`;
-}
-
-// API Client Functions with comprehensive error handling
-async function fetchData360(
-  params: Record<string, string>,
-  timeout: number = CONFIG.API_TIMEOUT_MS
-): Promise<DataResult<Data360Response>> {
-  // Trigger lazy cache cleanup periodically (serverless-safe)
-  lazyCleanupCache();
-
-  // Check cache first
-  const cacheKey = getCacheKey(params);
-  const cached = apiCache.get(cacheKey);
-
-  if (isCacheValid(cached)) {
-    console.log(`Cache hit for: ${cacheKey}`);
-    return { success: true, data: cached.data };
-  }
-
-  // Cache miss or expired - fetch from API with timeout
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  const queryString = new URLSearchParams(params).toString();
-  const url = `${DATA360_API_BASE}/data360/data?${queryString}`;
-
+/** Run a tool body, turning Data360 failures into readable tool errors. */
+async function guarded(run: () => Promise<string>): Promise<ToolResult> {
   try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'Accept': 'application/json' }
-    });
-
-    clearTimeout(timeoutId);
-
-    // Handle HTTP errors
-    if (!response.ok) {
-      if (response.status === 429) {
-        return {
-          success: false,
-          error: {
-            type: DataErrorType.RATE_LIMITED,
-            message: 'API rate limit exceeded',
-            suggestedAction: 'Wait 2-3 minutes before retrying'
-          }
-        };
-      }
-
-      return {
-        success: false,
-        error: {
-          type: DataErrorType.API_ERROR,
-          message: `API request failed with status ${response.status}`,
-          details: response.statusText
-        }
-      };
-    }
-
-    // Parse JSON
-    let data: Data360Response;
-    try {
-      data = await response.json();
-    } catch (parseError) {
-      return {
-        success: false,
-        error: {
-          type: DataErrorType.MALFORMED_RESPONSE,
-          message: 'Invalid JSON response from API',
-          details: parseError
-        }
-      };
-    }
-
-    // Validate response structure
-    if (!data.value || !Array.isArray(data.value)) {
-      return {
-        success: false,
-        error: {
-          type: DataErrorType.MALFORMED_RESPONSE,
-          message: 'Unexpected response structure from API',
-          details: data
-        }
-      };
-    }
-
-    // Check for empty data
-    if (data.value.length === 0) {
-      return {
-        success: false,
-        error: {
-          type: DataErrorType.NO_DATA,
-          message: 'No data available for this query',
-          details: params,
-          suggestedAction: 'Try broader filters (e.g., global region, all sectors)'
-        }
-      };
-    }
-
-    // Store in cache
-    apiCache.set(cacheKey, {
-      data,
-      timestamp: Date.now()
-    });
-
-    console.log(`Cache miss - fetched and cached: ${cacheKey}`);
-
-    return { success: true, data };
-
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-
-    // Timeout error
-    if (error.name === 'AbortError') {
-      return {
-        success: false,
-        error: {
-          type: DataErrorType.TIMEOUT,
-          message: `Request timed out after ${timeout}ms`,
-          suggestedAction: 'API may be under heavy load. Try again in a few moments.'
-        }
-      };
-    }
-
-    // Network error
-    return {
-      success: false,
-      error: {
-        type: DataErrorType.NETWORK_ERROR,
-        message: 'Unable to reach World Bank Data360 API',
-        details: error.message,
-        suggestedAction: 'Check network connection or try again later'
-      }
-    };
-  }
-}
-
-// Fetch real recovery rates from IFC_GEM_PBR indicator with comprehensive error handling
-async function getRecoveryRateData(apiCode: string, dataSource: DataSource = 'public'): Promise<DataResult<number>> {
-  const recoveryParams = {
-    DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: INDICATOR_MAP[dataSource].recovery,  // Use appropriate recovery indicator based on data source
-    METRIC: "ARR",              // Average Recovery Rate (percentage)
-    REF_AREA: apiCode,
-    SECTOR: "_T",               // Overall (all sectors)
-    PROJECT_TYPE: "_T",         // All project types
-    SENIORITY: "_T",            // All seniority levels
-    TIME_PERIOD: getLatestPeriodCached(),
-  };
-
-  const result = await fetchData360(recoveryParams);
-
-  if (!result.success) {
-    return {
-      success: false,
-      error: result.error
-    };
-  }
-
-  // Get most recent recovery rate
-  const latestRecovery = result.data!.value
-    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-  // Validate we're getting percentage data
-  if (latestRecovery.UNIT_MEASURE !== 'PT') {
-    console.warn(`Expected percentage unit (PT) for recovery rate, got ${latestRecovery.UNIT_MEASURE}`);
-  }
-  if (latestRecovery.METRIC !== 'ARR') {
-    console.warn(`Expected METRIC='ARR' for recovery rate, got METRIC='${latestRecovery.METRIC}'`);
-  }
-
-  const recoveryRate = parseFloat(latestRecovery.OBS_VALUE);
-
-  // Validate range
-  if (recoveryRate < 0 || recoveryRate > 100) {
-    return {
-      success: false,
-      error: {
-        type: DataErrorType.INVALID_DATA,
-        message: `Invalid recovery rate: ${recoveryRate}%`,
-        details: 'Recovery rate must be between 0-100%'
-      }
-    };
-  }
-
-  // Check data staleness
-  const dataYear = parseInt(latestRecovery.TIME_PERIOD);
-  const currentYear = new Date().getFullYear();
-  const ageYears = currentYear - dataYear;
-
-  if (ageYears > 2) {
-    return {
-      success: true,
-      data: recoveryRate,
-      error: {
-        type: DataErrorType.STALE_DATA,
-        message: `Data is ${ageYears} years old (from ${dataYear})`,
-        suggestedAction: 'Consider data age when making decisions'
-      }
-    };
-  }
-
-  return {
-    success: true,
-    data: recoveryRate
-  };
-}
-
-// Estimate recovery rate using correlation with default rate (fallback method)
-function estimateRecoveryRate(defaultRate: number): number {
-  const globalAvgRecovery = 73;
-  const globalAvgDefault = 3.5;
-  const recoveryAdjustment = (globalAvgDefault - defaultRate) * 1.5;
-  return Math.max(60, Math.min(80, globalAvgRecovery + recoveryAdjustment));
-}
-
-// Fetch real sector data from IFC_GEM_PBD indicator with comprehensive error handling
-async function getSectorData(sectorCode: string, regionCode: string = "_T", projectTypeCode: string = "_T", dataSource: DataSource = 'public'): Promise<SectorDataResult | { error: DataError }> {
-  const sectorParams = {
-    DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
-    METRIC: "ADR",              // Average Default Rate
-    REF_AREA: regionCode,
-    SECTOR: sectorCode,
-    PROJECT_TYPE: projectTypeCode,
-    TIME_PERIOD: getLatestPeriodCached(),
-  };
-
-  const result = await fetchData360(sectorParams);
-
-  if (!result.success) {
-    return { error: result.error! };
-  }
-
-  // Get most recent default rate
-  const latestData = result.data!.value
-    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-  const defaultRate = parseFloat(latestData.OBS_VALUE);
-
-  if (defaultRate < 0 || defaultRate > 100) {
-    return {
-      error: {
-        type: DataErrorType.INVALID_DATA,
-        message: `Invalid default rate for sector ${sectorCode}: ${defaultRate}%`,
-        details: 'Default rate must be between 0-100%'
-      }
-    };
-  }
-
-  // Try to get recovery rate for this sector
-  const recoveryResult = await getRecoveryRateData(regionCode, dataSource);
-
-  let recoveryRate: number;
-  let isRecoveryEstimated: boolean;
-  let recoveryError: DataError | undefined;
-
-  if (recoveryResult.success) {
-    recoveryRate = recoveryResult.data!;
-    isRecoveryEstimated = false;
-    recoveryError = recoveryResult.error;
-  } else {
-    recoveryRate = estimateRecoveryRate(defaultRate);
-    isRecoveryEstimated = true;
-    recoveryError = recoveryResult.error;
-  }
-
-  return {
-    sectorCode,
-    sectorName: SECTOR_NAMES[sectorCode] || sectorCode,
-    defaultRate,
-    recoveryRate,
-    isRecoveryEstimated,
-    recoveryError,
-    period: "1994-2024",
-  };
-}
-
-// Fetch historical time series data
-interface TimeSeriesDataPoint {
-  year: string;
-  defaultRate: number;
-  recoveryRate?: number;
-}
-
-async function getTimeSeriesData(
-  regionCode: string = "_T",
-  sectorCode: string = "_T",
-  projectTypeCode: string = "_T",
-  startYear: number = 2014,
-  endYear: number = 2024,
-  dataSource: DataSource = 'public'
-): Promise<TimeSeriesDataPoint[] | { error: DataError }> {
-  const dataPoints: TimeSeriesDataPoint[] = [];
-
-  for (let year = startYear; year <= endYear; year++) {
-    const params = {
-      DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
-      METRIC: "ADR",
-      REF_AREA: regionCode,
-      SECTOR: sectorCode,
-      PROJECT_TYPE: projectTypeCode,
-      TIME_PERIOD: year.toString(),
-    };
-
-    const result = await fetchData360(params);
-
-    if (result.success && result.data!.value.length > 0) {
-      const latestData = result.data!.value[0];
-      const defaultRate = parseFloat(latestData.OBS_VALUE);
-
-      if (defaultRate >= 0 && defaultRate <= 100) {
-        dataPoints.push({
-          year: year.toString(),
-          defaultRate
-        });
-      }
-    }
-  }
-
-  if (dataPoints.length === 0) {
-    return {
-      error: {
-        type: DataErrorType.NO_DATA,
-        message: `No historical data available for the specified parameters`,
-        suggestedAction: 'Try broader filters or a different time range'
-      }
-    };
-  }
-
-  return dataPoints;
-}
-
-// Fetch seniority-specific recovery rate data
-async function getSeniorityRecoveryData(seniorityCode: string, regionCode: string = "_T", dataSource: DataSource = 'public'): Promise<DataResult<number>> {
-  const recoveryParams = {
-    DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: INDICATOR_MAP[dataSource].recovery,  // Use appropriate recovery indicator based on data source
-    METRIC: "ARR",              // Average Recovery Rate (percentage)
-    REF_AREA: regionCode,
-    SECTOR: "_T",
-    PROJECT_TYPE: "_T",
-    SENIORITY: seniorityCode,  // SS or SU
-    TIME_PERIOD: getLatestPeriodCached(),
-  };
-
-  const result = await fetchData360(recoveryParams);
-
-  if (!result.success) {
-    return {
-      success: false,
-      error: result.error
-    };
-  }
-
-  const latestRecovery = result.data!.value
-    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-  const recoveryRate = parseFloat(latestRecovery.OBS_VALUE);
-
-  // Validate range
-  if (recoveryRate < 0 || recoveryRate > 100) {
-    return {
-      success: false,
-      error: {
-        type: DataErrorType.INVALID_DATA,
-        message: `Invalid recovery rate: ${recoveryRate}%`,
-        details: 'Recovery rate must be between 0-100%'
-      }
-    };
-  }
-
-  return {
-    success: true,
-    data: recoveryRate
-  };
-}
-
-// Fetch project type data from IFC_GEM_PBD indicator with comprehensive error handling
-async function getProjectTypeData(projectTypeCode: string, regionCode: string = "_T", sectorCode: string = "_T", dataSource: DataSource = 'public'): Promise<SectorDataResult | { error: DataError }> {
-  const params = {
-    DATABASE_ID: IFC_GEM_DATASET,
-    INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
-    METRIC: "ADR",              // Average Default Rate
-    REF_AREA: regionCode,
-    SECTOR: sectorCode,
-    PROJECT_TYPE: projectTypeCode,
-    TIME_PERIOD: getLatestPeriodCached(),
-  };
-
-  const result = await fetchData360(params);
-
-  if (!result.success) {
-    return { error: result.error! };
-  }
-
-  // Get most recent default rate
-  const latestData = result.data!.value
-    .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-  const defaultRate = parseFloat(latestData.OBS_VALUE);
-
-  if (defaultRate < 0 || defaultRate > 100) {
-    return {
-      error: {
-        type: DataErrorType.INVALID_DATA,
-        message: `Invalid default rate for project type ${projectTypeCode}: ${defaultRate}%`,
-        details: 'Default rate must be between 0-100%'
-      }
-    };
-  }
-
-  // Try to get recovery rate for this region
-  const recoveryResult = await getRecoveryRateData(regionCode, dataSource);
-
-  let recoveryRate: number;
-  let isRecoveryEstimated: boolean;
-  let recoveryError: DataError | undefined;
-
-  if (recoveryResult.success) {
-    recoveryRate = recoveryResult.data!;
-    isRecoveryEstimated = false;
-    recoveryError = recoveryResult.error;
-  } else {
-    recoveryRate = estimateRecoveryRate(defaultRate);
-    isRecoveryEstimated = true;
-    recoveryError = recoveryResult.error;
-  }
-
-  return {
-    sectorCode: projectTypeCode,  // Reusing structure
-    sectorName: PROJECT_TYPE_NAMES[projectTypeCode] || projectTypeCode,
-    defaultRate,
-    recoveryRate,
-    isRecoveryEstimated,
-    recoveryError,
-    period: "1994-2024",
-  };
-}
-
-async function getRegionData(region: string, dataSource: DataSource = 'public'): Promise<RegionDataResult | { error: DataError } | null> {
-  const apiCode = REGION_NAMES[region.toLowerCase()];
-  if (!apiCode) {
-    return null;
-  }
-
-  try {
-    // Fetch default rate - using proper World Bank Data360 API parameters
-    // Use appropriate indicator based on data source (public or private)
-    // METRIC: ADR = Average Default Rate (not CP which is counterpart count!)
-    const defaultParams = {
-      DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
-      METRIC: "ADR",
-      REF_AREA: apiCode,
-      SECTOR: "_T",  // Overall (all sectors)
-      TIME_PERIOD: getLatestPeriodCached(),
-    };
-
-    // Fetch loan counts - using CP (Counterparts) metric
-    // Use appropriate historical indicator based on data source (fixes indicator mismatch bug)
-    const countParams = {
-      DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: INDICATOR_MAP[dataSource].historical,  // Use data source-appropriate historical indicator
-      METRIC: "CP",  // CP = Counterparts (count of entities)
-      REF_AREA: apiCode,
-      SECTOR: "_T",
-      TIME_PERIOD: getLatestPeriodCached(),
-    };
-
-    // Fetch loan volumes - using SA (Signed Amount) metric
-    // Use appropriate historical indicator based on data source (fixes indicator mismatch bug)
-    const volumeParams = {
-      DATABASE_ID: IFC_GEM_DATASET,
-      INDICATOR: INDICATOR_MAP[dataSource].historical,  // Use data source-appropriate historical indicator
-      METRIC: "SA",  // SA = Signed Amount
-      REF_AREA: apiCode,
-      SECTOR: "_T",
-      TIME_PERIOD: getLatestPeriodCached(),
-    };
-
-    const [defaultResult, countResult, volumeResult] = await Promise.all([
-      fetchData360(defaultParams),
-      fetchData360(countParams),
-      fetchData360(volumeParams),
-    ]);
-
-    // Check if default rate fetch failed (critical data)
-    if (!defaultResult.success) {
-      return { error: defaultResult.error! };
-    }
-
-    // Get most recent default rate
-    const latestDefault = defaultResult.data!.value
-      .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0];
-
-    // Validate we're getting percentage data, not count data
-    if (latestDefault.UNIT_MEASURE !== 'PT') {
-      console.warn(`Expected percentage unit (PT), got ${latestDefault.UNIT_MEASURE}. Check METRIC='ADR' is being used.`);
-    }
-    if (latestDefault.METRIC !== 'ADR') {
-      console.warn(`Expected METRIC='ADR', got METRIC='${latestDefault.METRIC}'.`);
-    }
-
-    const defaultRate = parseFloat(latestDefault.OBS_VALUE);
-
-    // Sanity check: default rates should be 0-100%
-    if (defaultRate > 100) {
-      return {
-        error: {
-          type: DataErrorType.INVALID_DATA,
-          message: `Invalid default rate: ${defaultRate}%`,
-          details: 'Default rate exceeds 100%'
-        }
-      };
-    }
-
-    // Get most recent count (non-critical, use 0 if unavailable)
-    const numberOfLoans = countResult.success
-      ? parseFloat(countResult.data!.value
-          .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0]?.OBS_VALUE || '0')
-      : 0;
-
-    // Get most recent volume (non-critical, use 0 if unavailable)
-    const totalVolume = volumeResult.success
-      ? parseFloat(volumeResult.data!.value
-          .sort((a: any, b: any) => parseInt(b.TIME_PERIOD) - parseInt(a.TIME_PERIOD))[0]?.OBS_VALUE || '0') * 1e6
-      : 0;
-
-    // Fetch real recovery rate from API (use appropriate indicator based on data source)
-    const recoveryResult = await getRecoveryRateData(apiCode, dataSource);
-
-    // Determine recovery rate and approximation status
-    let recoveryRate: number;
-    let isRecoveryEstimated: boolean;
-    let recoveryError: DataError | undefined;
-
-    if (recoveryResult.success) {
-      recoveryRate = recoveryResult.data!;
-      isRecoveryEstimated = false;
-      recoveryError = recoveryResult.error; // Could be STALE_DATA warning
-    } else {
-      // Use approximation if real data unavailable
-      recoveryRate = estimateRecoveryRate(defaultRate);
-      isRecoveryEstimated = true;
-      recoveryError = recoveryResult.error;
-    }
-
-    return {
-      region: REGION_DISPLAY_NAMES[apiCode],
-      defaultRate,
-      recoveryRate: Math.round(recoveryRate * 10) / 10,
-      numberOfLoans: Math.round(numberOfLoans),
-      totalVolume: Math.round(totalVolume),
-      period: "1994-2024",
-      isRecoveryEstimated,  // Flag to indicate data source
-      recoveryError,  // Error/warning about recovery data (e.g., stale, unavailable)
-    };
+    return text(await run());
   } catch (error) {
-    console.error(`Error fetching data for region ${region}:`, error);
-    return null;
+    if (error instanceof Data360Error) {
+      console.error(`Data360 ${error.kind}: ${error.message}`);
+      return text(`⚠️ **World Bank Data360 request failed** (${error.kind})\n\n${error.message}`, true);
+    }
+    throw error;
   }
 }
 
-// Create MCP Handler with tools
+function period(source: DataSource, vintage: string): string {
+  return `${DATA_SOURCE_INFO[source].coverageStart}–${vintage}`;
+}
+
+function attribution(source: DataSource, vintage: string, indicators: string[]): string {
+  const info = DATA_SOURCE_INFO[source];
+  const stale = Number(vintage) < new Date().getFullYear() - 1
+    ? ` ⚠️ This is the latest GEMs publication on Data360; it may predate the current GEMs report.`
+    : '';
+  return (
+    `*Source: World Bank Data360, IFC GEMs (${indicators.join(', ')}), ${info.label} — ${info.description}. ` +
+    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${stale}*`
+  );
+}
+
+function areaName(code: string): string {
+  return AREA_NAMES[code] ?? COUNTRY_NAMES[code] ?? code;
+}
+
+function defaultRateText(stat: RateStat): string {
+  const ci = stat.ci90 ? ` (90% CI ${stat.ci90[0].toFixed(2)}–${stat.ci90[1].toFixed(2)}%)` : '';
+  return pct(stat.rate.value) + ci;
+}
+
+/** Countries with published default rates for `source`. */
+async function countriesWithData(source: DataSource): Promise<string[]> {
+  const byArea = await getRates(source, 'default', GLOBAL_TOTAL, 'REF_AREA');
+  return [...byArea.keys()].filter((code) => COUNTRY_NAMES[code]).sort((a, b) => COUNTRY_NAMES[a].localeCompare(COUNTRY_NAMES[b]));
+}
+
+const COMPARISON_GROUPS = {
+  region: Object.values(REGIONS) as string[],
+  income: ['WLD', ...Object.values(INCOME_GROUPS)],
+  country: Object.keys(COUNTRY_NAMES),
+};
+
+const SELECTION_METHOD_TEXT: Record<Selection['method'], string> = {
+  'unique': '',
+  'count-anchor': 'the value equal to defaults ÷ observations of the full sample',
+  'historical-anchor': 'closest to the period average reconstructed from the annual series',
+  'published-precision': 'the only value at published precision',
+  'first-listed': 'first value listed by Data360 — treat as uncertain',
+};
+
+/** Disclose when Data360 returned several values for one breakdown; empty when unambiguous. */
+function ambiguityNote(label: string, rate: Selection): string {
+  if (rate.candidates.length < 2) return '';
+  return (
+    `\n⚠️ ${label}: Data360 returned ${rate.candidates.length} values for this breakdown ` +
+    `(${rate.candidates.map(pct).join(', ')}) that differ by a dimension the Data360 API does not expose. ` +
+    `Showing ${pct(rate.value)}: ${SELECTION_METHOD_TEXT[rate.method]}.\n`
+  );
+}
+
+function expectedLoss(defaultRate: number, recoveryRate: number): number {
+  return (defaultRate * (100 - recoveryRate)) / 100;
+}
+
+/** Sample size line; recovery tables carry only defaults and signed amount. */
+function sampleLine(stat: RateStat, label = 'Sample'): string {
+  const parts: string[] = [];
+  if (stat.counterparts !== undefined) parts.push(`${stat.counterparts.toLocaleString('en-US')} counterparts`);
+  if (stat.observations !== undefined) parts.push(`${stat.observations.toLocaleString('en-US')} counterpart-years observed`);
+  if (stat.defaults !== undefined) parts.push(`${stat.defaults.toLocaleString('en-US')} ${stat.defaultsUnit}`);
+  if (stat.signedAmountEURm !== undefined) {
+    parts.push(`EUR ${(stat.signedAmountEURm / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 })} bn signed`);
+  }
+  return parts.length ? `**${label}:** ${parts.join(' · ')}\n` : '';
+}
+
+/** Sample lines for a default/recovery pair. */
+function sampleLines(dr?: RateStat, rr?: RateStat): string {
+  return (dr ? sampleLine(dr, 'Default sample') : '') + (rr ? sampleLine(rr, 'Recovery sample') : '');
+}
+
+/** Table marker for ambiguous values: † resolved by a selection rule, ‡ unresolved. */
+function marker(rate: Selection): string {
+  if (rate.candidates.length < 2) return '';
+  return rate.method === 'first-listed' ? ' ‡' : ' †';
+}
+
+function markerLegend(rates: Selection[]): string {
+  const marks = new Set(rates.map(marker));
+  let out = '';
+  if (marks.has(' †')) {
+    out +=
+      '† Data360 returned several values for this breakdown that differ by a dimension its API does not expose; ' +
+      'the headline value identified from the sample counts, the annual series or published precision is shown.\n';
+  }
+  if (marks.has(' ‡')) {
+    out += '‡ Same ambiguity, but no rule identifies the headline; the first value listed by Data360 is shown — treat as uncertain.\n';
+  }
+  return out;
+}
+
+function noData(what: string, filters: string[]): string {
+  return (
+    `ℹ️ **No ${what} published in Data360 for:**\n\n${filters.map((f) => `- ${f}`).join('\n')}\n\n` +
+    'IFC GEMs publishes sector, project-type and seniority breakdowns mainly at the global level, ' +
+    'and sovereign/public statistics for fewer breakdowns than private. Try region "global" or data_source "private".'
+  );
+}
+
+async function single(source: DataSource, kind: 'default' | 'recovery', slice: Slice): Promise<RateStat | undefined> {
+  return (await getRates(source, kind, slice)).get(slice.REF_AREA);
+}
+
+/** Compare a default rate with the global average of the same data source. */
+function benchmarkLine(source: DataSource, defaultRate: number, global: RateStat | undefined): string {
+  if (!global) return '';
+  const diff = defaultRate - global.rate.value;
+  const relation = Math.abs(diff) < 0.005 ? 'in line with' : diff < 0 ? 'below' : 'above';
+  return (
+    `Default rate is **${relation}** the global ${DATA_SOURCE_INFO[source].label.toLowerCase()} average ` +
+    `(${pct(global.rate.value)}) by ${Math.abs(diff).toFixed(2)} percentage points.\n\n`
+  );
+}
+
+interface BreakdownRow {
+  name: string;
+  defaultStat?: RateStat;
+  recoveryStat?: RateStat;
+}
+
+function breakdownTable(label: string, rows: BreakdownRow[]): string {
+  let out = `| ${label} | Default Rate | Recovery Rate | Expected Loss |\n|---|---|---|---|\n`;
+  for (const { name, defaultStat, recoveryStat } of rows) {
+    const dr = defaultStat ? pct(defaultStat.rate.value) + marker(defaultStat.rate) : 'n/a';
+    const rr = recoveryStat ? pct(recoveryStat.rate.value) + marker(recoveryStat.rate) : 'n/a';
+    const el = defaultStat && recoveryStat ? pct(expectedLoss(defaultStat.rate.value, recoveryStat.rate.value)) : 'n/a';
+    out += `| ${name} | ${dr} | ${rr} | ${el} |\n`;
+  }
+  const rates = rows.flatMap((r) => [r.defaultStat?.rate, r.recoveryStat?.rate]).filter((r) => r !== undefined);
+  return `${out}\n${markerLegend(rates)}n/a = not published for this breakdown.\n`;
+}
+
+/** Default and recovery stats for every value of one dimension; rows sorted by default rate. */
+async function breakdown(
+  source: DataSource,
+  slice: Slice,
+  dimension: 'SECTOR' | 'PROJECT_TYPE',
+  names: Record<string, string>,
+): Promise<{ rows: BreakdownRow[]; vintage?: string; defaults: Map<string, RateStat>; recoveries: Map<string, RateStat> }> {
+  const [defaults, recoveries] = await Promise.all([
+    getRates(source, 'default', slice, dimension),
+    getRates(source, 'recovery', slice, dimension),
+  ]);
+  // Codes without a known label (e.g. SECTOR=MXS) are listed by code rather than dropped.
+  const codes = [...new Set([...defaults.keys(), ...recoveries.keys()])].filter((c) => c !== '_T');
+  const rows = codes
+    .map((code) => ({ name: names[code] ?? code, defaultStat: defaults.get(code), recoveryStat: recoveries.get(code) }))
+    .sort((a, b) => (a.defaultStat?.rate.value ?? Infinity) - (b.defaultStat?.rate.value ?? Infinity));
+  const vintage = [...defaults.values(), ...recoveries.values()][0]?.vintage;
+  return { rows, vintage, defaults, recoveries };
+}
+
 const handler = createMcpHandler(
   (server) => {
-    // Tool 1: Get Default Rates
-    server.tool(
+    server.registerTool(
       'get_default_rates',
-      'Query default frequencies for emerging market lending by region. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .describe('Region to query (e.g., global, east-asia, latin-america)'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Default rates by region',
+        description: `Average annual default rate for emerging-market lending in a region, with sample size. ${SOURCE_DESCRIPTION}`,
+        inputSchema: { region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam },
+        annotations: READ_ONLY,
       },
-      async ({ region, data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        const result = await getRegionData(region, dataSource);
-
-        // Handle errors
-        if (!result || 'error' in result) {
-          const error = result && 'error' in result ? result.error : undefined;
-
-          if (error) {
-            switch (error.type) {
-              case DataErrorType.NETWORK_ERROR:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `⚠️ **World Bank Data360 API is currently unavailable**\n\n${error.message}\n\n${error.suggestedAction || 'Please try again later.'}`
-                  }]
-                };
-
-              case DataErrorType.NO_DATA:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `ℹ️ **No default rate data available**\n\n${error.message}\n\n${error.suggestedAction || ''}`
-                  }]
-                };
-
-              default:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `⚠️ **Error retrieving default rate data**\n\n${error.message}\n\n${error.suggestedAction || ''}`
-                  }]
-                };
-            }
-          }
-
-          // Fallback to mock data
-          const mockData = mockCreditData[region];
-          if (mockData) {
-            return {
-              content: [{
-                type: 'text',
-                text: `# Default Rates for ${mockData.region}\n\n**Default Rate:** ${mockData.defaultRate}%\n\n**Period:** ${mockData.period}\n\n**Context:** Out of ${mockData.numberOfLoans.toLocaleString()} loans totaling $${(mockData.totalVolume / 1e9).toFixed(1)} billion USD, ${mockData.defaultRate}% resulted in default.\n\n*⚠️ Using fallback data (API unavailable)*`
-              }]
-            };
-          }
-
-          return {
-            content: [{
-              type: 'text',
-              text: `No data available for region: ${region}`
-            }]
-          };
-        }
-
-        // At this point TypeScript knows result is RegionDataResult
-        const data = result as RegionDataResult;
-
-        const attribution = getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: `# Default Rates for ${data.region}\n\n**Default Rate:** ${data.defaultRate}%\n\n**Period:** ${data.period}\n\n**Context:** Out of ${data.numberOfLoans.toLocaleString()} loans totaling $${(data.totalVolume / 1e9).toFixed(1)} billion USD, ${data.defaultRate}% resulted in default.\n\n${attribution}`
-          }]
-        };
-      }
+      ({ region, data_source: source = 'public' }) =>
+        guarded(async () => {
+          const code = AREAS[region];
+          const stat = await single(source, 'default', { ...GLOBAL_TOTAL, REF_AREA: code });
+          if (!stat) return noData('default rate', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
+          return (
+            `# Default Rates: ${AREA_NAMES[code]}\n\n` +
+            `**Average annual default rate:** ${defaultRateText(stat)}\n` +
+            `**Period:** ${period(source, stat.vintage)}\n` +
+            sampleLine(stat) +
+            ambiguityNote('Default rate', stat.rate) +
+            `\n${attribution(source, stat.vintage, [DATA_SOURCE_INFO[source].defaultIndicator])}`
+          );
+        }),
     );
 
-    // Tool 2: Get Recovery Rates
-    server.tool(
+    server.registerTool(
       'get_recovery_rates',
-      'Retrieve recovery rates for defaulted loans by region. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .describe('Region to query'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Recovery rates by region',
+        description: `Average recovery rate on defaulted exposures in a region. ${SOURCE_DESCRIPTION}`,
+        inputSchema: { region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam },
+        annotations: READ_ONLY,
       },
-      async ({ region, data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        const data = await getRegionData(region, dataSource);
-
-        // Handle errors with transparent messaging
-        if (!data || 'error' in data) {
-          const error = data && 'error' in data ? data.error : undefined;
-
-          if (error) {
-            switch (error.type) {
-              case DataErrorType.NETWORK_ERROR:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `⚠️ **World Bank Data360 API is currently unavailable**\n\n` +
-                          `Unable to retrieve real-time recovery rate data.\n\n` +
-                          `**Reason:** ${error.message}\n\n` +
-                          `${error.suggestedAction || 'Please try again later.'}`
-                  }]
-                };
-
-              case DataErrorType.TIMEOUT:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `⚠️ **Request Timeout**\n\n` +
-                          `${error.message}\n\n` +
-                          `${error.suggestedAction}`
-                  }]
-                };
-
-              case DataErrorType.NO_DATA:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `ℹ️ **No recovery rate data available for ${REGION_DISPLAY_NAMES[REGION_NAMES[region]]}**\n\n` +
-                          `The World Bank Data360 IFC_GEM database does not contain recovery rate data for this region.\n\n` +
-                          `${error.suggestedAction || 'Try querying global data or a different region.'}`
-                  }]
-                };
-
-              case DataErrorType.RATE_LIMITED:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `⚠️ **API Rate Limit Exceeded**\n\n` +
-                          `${error.message}\n\n` +
-                          `${error.suggestedAction}`
-                  }]
-                };
-
-              default:
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `⚠️ **Error retrieving recovery rate data**\n\n` +
-                          `${error.message}\n\n` +
-                          `${error.suggestedAction || 'Please try again.'}`
-                  }]
-                };
-            }
-          }
-
-          // Fallback to mock data if no error but no data
-          const mockData = mockCreditData[region];
-          if (mockData) {
-            return {
-              content: [{
-                type: 'text',
-                text: `# Recovery Rates for ${mockData.region}\n\n**Recovery Rate:** ${mockData.recoveryRate}%\n\n**Analysis:** When loans default in ${mockData.region}, lenders recover an average of ${mockData.recoveryRate}% of the loan value.\n\n*⚠️ Using fallback data (API unavailable)*`
-              }]
-            };
-          }
-
-          return {
-            content: [{
-              type: 'text',
-              text: `No data available for region: ${region}`
-            }]
-          };
-        }
-
-        // At this point TypeScript knows data is RegionDataResult
-        const regionData = data as RegionDataResult;
-
-        // Build result message with transparent approximation disclosure
-        let resultText = `# Recovery Rates for ${regionData.region}\n\n**Recovery Rate:** ${regionData.recoveryRate}%\n\n`;
-
-        if (regionData.isRecoveryEstimated && regionData.recoveryError) {
-          // Show approximation with methodology
-          resultText += `⚠️ **Data Status:** Recovery rate approximated (real data unavailable)\n\n`;
-          resultText += `**Approximation Method:**\n`;
-          resultText += `- Based on inverse correlation between default and recovery rates\n`;
-          resultText += `- Formula: 73% (baseline) + (3.5% - ${regionData.defaultRate.toFixed(2)}%) × 1.5\n`;
-          resultText += `- Confidence: Moderate (±5-10% typical variance)\n`;
-          resultText += `- Source: Statistical analysis of IFC_GEM historical data (1994-2024)\n\n`;
-          resultText += `**Why approximated:** ${regionData.recoveryError.message}\n\n`;
-        } else if (regionData.recoveryError?.type === DataErrorType.STALE_DATA) {
-          // Show warning about stale data
-          resultText += `⚠️ **Data Age Warning:** ${regionData.recoveryError.message}\n\n`;
-        }
-
-        resultText += `**Analysis:** When loans default, lenders recover ${regionData.recoveryRate}% of loan value.\n\n`;
-        resultText += `**Period:** ${regionData.period}\n\n`;
-
-        // Data source attribution
-        if (regionData.isRecoveryEstimated) {
-          resultText += `*Approximated based on default rate correlation*\n\n`;
-        }
-
-        resultText += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: resultText
-          }]
-        };
-      }
+      ({ region, data_source: source = 'public' }) =>
+        guarded(async () => {
+          const code = AREAS[region];
+          const stat = await single(source, 'recovery', { ...GLOBAL_TOTAL, REF_AREA: code });
+          if (!stat) return noData('recovery rate', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
+          return (
+            `# Recovery Rates: ${AREA_NAMES[code]}\n\n` +
+            `**Average recovery rate:** ${pct(stat.rate.value)}\n` +
+            `**Period:** ${period(source, stat.vintage)}\n` +
+            sampleLine(stat) +
+            ambiguityNote('Recovery rate', stat.rate) +
+            `\nWhen loans default, lenders recover on average ${pct(stat.rate.value)} of the exposure ` +
+            '(discounted post-default cash flows over the outstanding amount).\n\n' +
+            attribution(source, stat.vintage, [DATA_SOURCE_INFO[source].recoveryIndicator])
+          );
+        }),
     );
 
-    // Tool 3: Query Credit Risk
-    server.tool(
+    server.registerTool(
       'query_credit_risk',
-      'Get comprehensive credit risk statistics for a region including default rates, recovery rates, and loan volumes. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .describe('Region to analyze'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Credit risk profile',
+        description: `Credit risk profile for a region: default rate, recovery rate, expected loss and sample size. ${SOURCE_DESCRIPTION}`,
+        inputSchema: { region: regionParam.describe('Region or income group to analyze'), data_source: dataSourceParam },
+        annotations: READ_ONLY,
       },
-      async ({ region, data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        const result = await getRegionData(region, dataSource);
-
-        // Handle errors
-        if (!result || 'error' in result) {
-          const error = result && 'error' in result ? result.error : undefined;
-
-          if (error) {
-            return {
-              content: [{
-                type: 'text',
-                text: `⚠️ **Error retrieving credit risk data**\n\n${error.message}\n\n${error.suggestedAction || 'Please try again.'}`
-              }]
-            };
-          }
-
-          // Fallback to mock data
-          const mockData = mockCreditData[region];
-          if (mockData) {
-            const expectedLoss = (mockData.defaultRate * (100 - mockData.recoveryRate) / 100).toFixed(2);
-            return {
-              content: [{
-                type: 'text',
-                text: `# Credit Risk Profile: ${mockData.region}\n\n## Key Metrics\n\n**Default Rate:** ${mockData.defaultRate}%\n**Recovery Rate:** ${mockData.recoveryRate}%\n**Number of Loans:** ${mockData.numberOfLoans.toLocaleString()}\n**Total Volume:** $${(mockData.totalVolume / 1e9).toFixed(1)}B USD\n**Period:** ${mockData.period}\n\n## Risk Assessment\n\n**Expected Loss:** ${expectedLoss}%\n\n*⚠️ Using fallback data (API unavailable)*`
-              }]
-            };
-          }
-
-          return {
-            content: [{
-              type: 'text',
-              text: `No data available for region: ${region}`
-            }]
-          };
-        }
-
-        // At this point TypeScript knows result is RegionDataResult
-        const data = result as RegionDataResult;
-
-        const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
-
-        // Determine data source note with transparent approximation
-        const recoveryNote = data.isRecoveryEstimated
-          ? ' (approximated - see note below)'
-          : '';
-        let dataNote = data.isRecoveryEstimated
-          ? '**Note on Recovery Rate:** Real recovery rate data not available. Approximated using statistical correlation:\n' +
-            `- Formula: 73% (baseline) + (3.5% - ${data.defaultRate.toFixed(2)}%) × 1.5\n` +
-            '- Confidence: Moderate (±5-10% typical variance)\n\n'
-          : '';
-
-        dataNote += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: `# Credit Risk Profile: ${data.region}\n\n## Key Metrics\n\n**Default Rate:** ${data.defaultRate}%\n**Recovery Rate:** ${data.recoveryRate}%${recoveryNote}\n**Number of Loans:** ${data.numberOfLoans.toLocaleString()}\n**Total Volume:** $${(data.totalVolume / 1e9).toFixed(1)}B USD\n**Period:** ${data.period}\n\n## Risk Assessment\n\n**Expected Loss:** ${expectedLoss}%\n\nThe expected loss represents the percentage of loan value expected to be lost after accounting for defaults and recoveries.\n\n${dataNote}`
-          }]
-        };
-      }
+      ({ region, data_source: source = 'public' }) =>
+        guarded(async () => {
+          const code = AREAS[region];
+          const slice = { ...GLOBAL_TOTAL, REF_AREA: code };
+          const [dr, rr] = await Promise.all([single(source, 'default', slice), single(source, 'recovery', slice)]);
+          if (!dr && !rr) return noData('credit risk data', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
+          const vintage = (dr ?? rr)!.vintage;
+          let out = `# Credit Risk Profile: ${AREA_NAMES[code]}\n\n## Key Metrics\n\n`;
+          out += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
+          out += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          out += `**Period:** ${period(source, vintage)}\n`;
+          out += sampleLines(dr, rr);
+          if (dr) out += ambiguityNote('Default rate', dr.rate);
+          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
+          out += '\n## Risk Assessment\n\n';
+          out +=
+            dr && rr
+              ? `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))} per year ` +
+                '(default rate × (1 − recovery rate)).\n\n'
+              : 'Expected loss not computed: both default and recovery rates are required.\n\n';
+          const info = DATA_SOURCE_INFO[source];
+          return out + attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator]);
+        }),
     );
 
-    // Tool 4: Sector Analysis
-    server.tool(
+    server.registerTool(
       'get_sector_analysis',
-      'Analyze credit risk performance by economic sector (21 sectors: GICS + IFC categories). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        sector: z.enum([
-          'all', 'overall',
-          // IFC categories
-          'non-financial', 'financial-institutions', 'banking', 'infrastructure',
-          'non-banking', 'renewables', 'services',
-          // GICS sectors
-          'financials', 'utilities', 'industrials', 'consumer-staples',
-          'consumer-discretionary', 'materials', 'others', 'communication-services',
-          'health-care', 'energy', 'real-estate', 'information-technology', 'administration'
-        ])
-          .optional()
-          .describe('Economic sector to analyze, or "all" for all sectors'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Credit risk by sector',
+        description: `Global default and recovery rates by economic sector (IFC categories and GICS sectors), or one sector in detail. ${SOURCE_DESCRIPTION}`,
+        inputSchema: {
+          sector: z.enum(SECTOR_KEYS).optional().describe('Sector to analyze, or "all" (default) for a comparison table'),
+          data_source: dataSourceParam,
+        },
+        annotations: READ_ONLY,
       },
-      async ({ sector = 'all', data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        // Map user-friendly names to sector codes
-        const sectorMapping: Record<string, string> = {
-          'all': '_T',
-          'overall': '_T',
-          'non-financial': 'NF',
-          'financial-institutions': 'FI',
-          'banking': 'BK',
-          'infrastructure': 'IN',
-          'non-banking': 'NB',
-          'renewables': 'R',
-          'services': 'S',
-          'financials': 'F',
-          'utilities': 'U',
-          'industrials': 'I',
-          'consumer-staples': 'CST',
-          'consumer-discretionary': 'CD',
-          'materials': 'M',
-          'others': 'O',
-          'communication-services': 'CS',
-          'health-care': 'HC',
-          'energy': 'E',
-          'real-estate': 'RE',
-          'information-technology': 'IT',
-          'administration': 'A',
-        };
-
-        const sectorCode = sectorMapping[sector] || '_T';
-
-        if (sector !== 'all' && sector !== 'overall') {
-          // Fetch real data for specific sector
-          const result = await getSectorData(sectorCode, "_T", "_T", dataSource);
-
-          if (!result || 'error' in result) {
-            const error = result && 'error' in result ? result.error : undefined;
-
-            if (error) {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `⚠️ **Error retrieving sector data**\n\n${error.message}\n\n${error.suggestedAction || 'Try broader filters.'}`
-                }]
-              };
-            }
-
-            // Fallback to mock data if available
-            const mockMatch = mockSectorData.find(s =>
-              s.sector.toLowerCase().includes(sector.toLowerCase())
+      ({ sector = 'all', data_source: source = 'public' }) =>
+        guarded(async () => {
+          const info = DATA_SOURCE_INFO[source];
+          const code = SECTORS[sector];
+          if (code === '_T') {
+            const { rows, vintage } = await breakdown(source, GLOBAL_TOTAL, 'SECTOR', SECTOR_NAMES);
+            if (!rows.length || !vintage) return noData('sector breakdown', [`Data source: ${source}`]);
+            return (
+              `# Credit Risk by Sector (Global, ${info.label})\n\n` +
+              breakdownTable('Sector', rows) +
+              `\n${attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator])}`
             );
-
-            if (mockMatch) {
-              const expectedLoss = (mockMatch.defaultRate * (100 - mockMatch.recoveryRate) / 100).toFixed(2);
-              return {
-                content: [{
-                  type: 'text',
-                  text: `# Sector Analysis: ${mockMatch.sector}\n\n**Default Rate:** ${mockMatch.defaultRate}%\n**Recovery Rate:** ${mockMatch.recoveryRate}%\n**Average Loan Size:** $${(mockMatch.avgLoanSize / 1e6).toFixed(1)}M\n**Expected Loss:** ${expectedLoss}%\n\n${mockMatch.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n*⚠️ Using fallback data (API unavailable)*`
-                }]
-              };
-            }
-
-            return {
-              content: [{
-                type: 'text',
-                text: `No data available for sector: ${sector}\n\nAvailable sectors: ${Object.keys(sectorMapping).filter(k => k !== 'all' && k !== 'overall').join(', ')}`
-              }]
-            };
           }
 
-          // At this point TypeScript knows result is SectorDataResult
-          const data = result as SectorDataResult;
-
-          const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
-          const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
-          let dataSourceNote = '';
-          if (data.isRecoveryEstimated) {
-            dataSourceNote = '*Recovery rate estimated (real data unavailable).*\n\n';
-          }
-          dataSourceNote += getDataSourceAttribution(dataSource);
-
-          return {
-            content: [{
-              type: 'text',
-              text: `# Sector Analysis: ${data.sectorName}\n\n**Default Rate:** ${data.defaultRate.toFixed(2)}%\n**Recovery Rate:** ${data.recoveryRate.toFixed(2)}%${recoveryNote}\n**Expected Loss:** ${expectedLoss}%\n**Period:** ${data.period}\n\n${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n${dataSourceNote}`
-            }]
-          };
-        }
-
-        // Return all sectors (top sectors with real data)
-        const topSectorCodes = ['F', 'I', 'E', 'U', 'IN', 'BK', 'NF', 'R'];
-        const sectorDataArray: SectorDataResult[] = [];
-
-        for (const code of topSectorCodes) {
-          const result = await getSectorData(code, "_T", "_T", dataSource);
-          if (result && !('error' in result)) {
-            sectorDataArray.push(result as SectorDataResult);
-          }
-        }
-
-        if (sectorDataArray.length === 0) {
-          // Fallback to mock data
-          let result = `# Credit Risk by Sector\n\n`;
-          result += `| Sector | Default | Recovery | Avg Loan | Exp Loss |\n`;
-          result += `|--------|---------|----------|----------|----------|\n`;
-
-          mockSectorData
-            .sort((a, b) => a.defaultRate - b.defaultRate)
-            .forEach((s) => {
-              const expectedLoss = (s.defaultRate * (100 - s.recoveryRate) / 100).toFixed(2);
-              result += `| ${s.sector} | ${s.defaultRate}% | ${s.recoveryRate}% | $${(s.avgLoanSize / 1e6).toFixed(1)}M | ${expectedLoss}% |\n`;
-            });
-
-          result += `\n*Using fallback data (API unavailable)*`;
-
-          return {
-            content: [{
-              type: 'text',
-              text: result
-            }]
-          };
-        }
-
-        // Show real data
-        let result = `# Credit Risk by Sector\n\n`;
-        result += `| Sector | Default Rate | Recovery Rate | Expected Loss |\n`;
-        result += `|--------|--------------|---------------|---------------|\n`;
-
-        sectorDataArray
-          .sort((a, b) => a.defaultRate - b.defaultRate)
-          .forEach((s) => {
-            const expectedLoss = (s.defaultRate * (100 - s.recoveryRate) / 100).toFixed(2);
-            const recoveryMark = s.isRecoveryEstimated ? '*' : '';
-            result += `| ${s.sectorName} | ${s.defaultRate.toFixed(2)}% | ${s.recoveryRate.toFixed(2)}%${recoveryMark} | ${expectedLoss}% |\n`;
-          });
-
-        result += `\n* = Recovery rate estimated\n\n`;
-        result += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: result
-          }]
-        };
-      }
+          const slice = { ...GLOBAL_TOTAL, SECTOR: code };
+          const [dr, rr, global] = await Promise.all([
+            single(source, 'default', slice),
+            single(source, 'recovery', slice),
+            single(source, 'default', GLOBAL_TOTAL),
+          ]);
+          if (!dr && !rr) return noData('sector data', [`Sector: ${SECTOR_NAMES[code]}`, `Data source: ${source}`]);
+          let out = `# Sector Analysis: ${SECTOR_NAMES[code]} (Global)\n\n`;
+          out += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
+          out += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          if (dr && rr) out += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))}\n`;
+          out += `**Period:** ${period(source, (dr ?? rr)!.vintage)}\n`;
+          out += sampleLines(dr, rr);
+          if (dr) out += ambiguityNote('Default rate', dr.rate);
+          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
+          out += '\n';
+          if (dr) out += benchmarkLine(source, dr.rate.value, global);
+          return out + attribution(source, (dr ?? rr)!.vintage, [info.defaultIndicator, info.recoveryIndicator]);
+        }),
     );
 
-    // Tool 5: Compare Regions
-    server.tool(
+    server.registerTool(
       'compare_regions',
-      'Compare credit risk metrics across multiple emerging market regions. Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        metric: z.enum(['default-rate', 'recovery-rate', 'both'])
-          .describe('Metric to compare across regions'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Compare regions, income groups or countries',
+        description:
+          `Rank regions, income groups or countries by default and/or recovery rate, with sample sizes. ${SOURCE_DESCRIPTION} ` +
+          'Country rankings exist for private (90 countries) and public (14) data.',
+        inputSchema: {
+          metric: z.enum(['default-rate', 'recovery-rate', 'both']).describe('Metric to compare'),
+          grouping: z.enum(['region', 'income', 'country']).optional().describe('What to rank (default: region)'),
+          data_source: dataSourceParam,
+        },
+        annotations: READ_ONLY,
       },
-      async ({ metric, data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        // Try to fetch real data for all regions
-        const regionDataArray: RegionDataResult[] = [];
-        for (const regionName of Object.keys(REGION_NAMES)) {
-          const result = await getRegionData(regionName, dataSource);
-          if (result && !('error' in result)) {
-            regionDataArray.push(result as RegionDataResult);
-          }
-        }
+      ({ metric, grouping = 'region', data_source: source = 'public' }) =>
+        guarded(async () => {
+          const info = DATA_SOURCE_INFO[source];
+          const codes = COMPARISON_GROUPS[grouping];
+          const wanted = new Set(codes);
+          const kinds = metric === 'both' ? (['default', 'recovery'] as const) : metric === 'default-rate' ? (['default'] as const) : (['recovery'] as const);
+          const results = await Promise.all(kinds.map((kind) => getRates(source, kind, GLOBAL_TOTAL, 'REF_AREA')));
 
-        let result = `# Regional Credit Risk Comparison\n\n`;
-
-        if (regionDataArray.length > 0) {
-          if (metric === 'default-rate' || metric === 'both') {
-            result += `## Default Rates\n\n`;
-            const sorted = regionDataArray.sort((a, b) => a.defaultRate - b.defaultRate);
-            sorted.forEach((r, i) => {
-              result += `${i + 1}. **${r.region}:** ${r.defaultRate}%\n`;
+          const heading = { region: 'Regional', income: 'Income Group', country: 'Country' }[grouping];
+          let out = `# ${heading} Credit Risk Comparison (${info.label})\n\n`;
+          let vintage: string | undefined;
+          kinds.forEach((kind, i) => {
+            const stats = [...results[i].values()].filter((s) => wanted.has(s.code));
+            stats.sort((a, b) => (kind === 'default' ? a.rate.value - b.rate.value : b.rate.value - a.rate.value));
+            out += `## ${kind === 'default' ? 'Default Rates (lowest first)' : 'Recovery Rates (highest first)'}\n\n`;
+            stats.forEach((s, rank) => {
+              const n = kind === 'default' ? s.counterparts ?? s.observations : s.defaults;
+              const unit = kind === 'default' ? (s.counterparts !== undefined ? 'counterparts' : 'observations') : s.defaultsUnit;
+              const sample = n !== undefined ? ` (n = ${n.toLocaleString('en-US')} ${unit})` : '';
+              out += `${rank + 1}. **${areaName(s.code)}:** ${pct(s.rate.value)}${marker(s.rate)}${sample}\n`;
             });
-            result += `\n`;
-          }
-
-          if (metric === 'recovery-rate' || metric === 'both') {
-            result += `## Recovery Rates\n\n`;
-            const sorted = regionDataArray.sort((a, b) => b.recoveryRate - a.recoveryRate);
-            sorted.forEach((r, i) => {
-              result += `${i + 1}. **${r.region}:** ${r.recoveryRate}%\n`;
-            });
-          }
-
-          result += `\n`;
-          result += getDataSourceAttribution(dataSource);
-        } else {
-          // Fallback to mock data
-          if (metric === 'default-rate' || metric === 'both') {
-            result += `## Default Rates\n\n`;
-            Object.values(mockCreditData).sort((a: any, b: any) => a.defaultRate - b.defaultRate).forEach((r: any, i: number) => {
-              result += `${i + 1}. **${r.region}:** ${r.defaultRate}%\n`;
-            });
-          }
-
-          result += `\n*Using cached data*`;
-        }
-
-        return {
-          content: [{
-            type: 'text',
-            text: result
-          }]
-        };
-      }
-    );
-
-    // Tool 6: Project Type Analysis
-    server.tool(
-      'get_project_type_analysis',
-      'Analyze credit risk by project financing type (Corporate Finance, Project Finance, etc.). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
-      {
-        projectType: z.enum([
-          'all', 'overall',
-          'corporate-finance', 'project-finance', 'financial-institutions',
-          'structured-finance', 'mixed', 'other'
-        ])
-          .optional()
-          .describe('Project financing type to analyze, or "all" for comparison'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
-      },
-      async ({ projectType = 'all', data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        // Map user-friendly names to project type codes
-        const projectTypeMapping: Record<string, string> = {
-          'all': '_T',
-          'overall': '_T',
-          'corporate-finance': 'CF',
-          'project-finance': 'PF',
-          'financial-institutions': 'FI',
-          'structured-finance': 'SF',
-          'mixed': 'MX',
-          'other': 'O',
-        };
-
-        const projectTypeCode = projectTypeMapping[projectType] || '_T';
-
-        if (projectType !== 'all' && projectType !== 'overall') {
-          // Fetch real data for specific project type
-          const result = await getProjectTypeData(projectTypeCode, "_T", "_T", dataSource);
-
-          if (!result || 'error' in result) {
-            const error = result && 'error' in result ? result.error : undefined;
-
-            if (error) {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `⚠️ **Error retrieving project type data**\n\n${error.message}\n\n${error.suggestedAction || 'Try broader filters.'}`
-                }]
-              };
-            }
-
-            return {
-              content: [{
-                type: 'text',
-                text: `No data available for project type: ${projectType}`
-              }]
-            };
-          }
-
-          // At this point TypeScript knows result is SectorDataResult
-          const data = result as SectorDataResult;
-
-          const expectedLoss = (data.defaultRate * (100 - data.recoveryRate) / 100).toFixed(2);
-          const recoveryNote = data.isRecoveryEstimated ? ' (estimated)' : '';
-          let dataSourceNote = '';
-          if (data.isRecoveryEstimated) {
-            dataSourceNote = '*Recovery rate estimated (real data unavailable).*\n\n';
-          }
-          dataSourceNote += getDataSourceAttribution(dataSource);
-
-          return {
-            content: [{
-              type: 'text',
-              text: `# Project Type Analysis: ${data.sectorName}\n\n` +
-                    `**Default Rate:** ${data.defaultRate.toFixed(2)}%\n` +
-                    `**Recovery Rate:** ${data.recoveryRate.toFixed(2)}%${recoveryNote}\n` +
-                    `**Expected Loss:** ${expectedLoss}%\n` +
-                    `**Period:** ${data.period}\n\n` +
-                    `${data.defaultRate < 3.5 ? 'Below-average' : 'Above-average'} risk vs global 3.5%.\n\n` +
-                    `${dataSourceNote}`
-            }]
-          };
-        }
-
-        // Return all project types comparison
-        const projectTypeCodes = ['CF', 'PF', 'FI', 'SF', 'MX', 'O'];
-        const projectTypeDataArray: SectorDataResult[] = [];
-
-        for (const code of projectTypeCodes) {
-          const result = await getProjectTypeData(code, "_T", "_T", dataSource);
-          if (result && !('error' in result)) {
-            projectTypeDataArray.push(result as SectorDataResult);
-          }
-        }
-
-        if (projectTypeDataArray.length === 0) {
-          return {
-            content: [{
-              type: 'text',
-              text: `⚠️ **No project type data available**\n\nUnable to retrieve data from World Bank Data360 API.`
-            }]
-          };
-        }
-
-        // Show comparison table
-        let result = `# Credit Risk by Project Type\n\n`;
-        result += `| Project Type | Default Rate | Recovery Rate | Expected Loss |\n`;
-        result += `|--------------|--------------|---------------|---------------|\n`;
-
-        projectTypeDataArray
-          .sort((a, b) => a.defaultRate - b.defaultRate)
-          .forEach((p) => {
-            const expectedLoss = (p.defaultRate * (100 - p.recoveryRate) / 100).toFixed(2);
-            const recoveryMark = p.isRecoveryEstimated ? '*' : '';
-            result += `| ${p.sectorName} | ${p.defaultRate.toFixed(2)}% | ${p.recoveryRate.toFixed(2)}%${recoveryMark} | ${expectedLoss}% |\n`;
+            const missing = codes.filter((c) => !results[i].has(c));
+            if (grouping === 'country') out += `\n${stats.length} of ${codes.length} GEMs countries published.\n`;
+            else if (missing.length) out += `\nNot published: ${missing.map(areaName).join(', ')}\n`;
+            out += '\n';
+            vintage ??= stats[0]?.vintage;
           });
-
-        result += `\n**Key Insights:**\n`;
-        const lowest = projectTypeDataArray.reduce((min, p) => p.defaultRate < min.defaultRate ? p : min);
-        const highest = projectTypeDataArray.reduce((max, p) => p.defaultRate > max.defaultRate ? p : max);
-        result += `- Lowest risk: ${lowest.sectorName} (${lowest.defaultRate.toFixed(2)}%)\n`;
-        result += `- Highest risk: ${highest.sectorName} (${highest.defaultRate.toFixed(2)}%)\n`;
-        result += `- Risk spread: ${(highest.defaultRate - lowest.defaultRate).toFixed(2)}% difference\n\n`;
-        result += `* = Recovery rate estimated\n\n`;
-        result += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: result
-          }]
-        };
-      }
+          if (!vintage) return noData(`${heading.toLowerCase()} data`, [`Data source: ${source}`]);
+          if (grouping === 'country') out += 'Small samples make country rates volatile; weigh them by n.\n\n';
+          const shown = results.flatMap((r) => [...r.values()].filter((s) => wanted.has(s.code)).map((s) => s.rate));
+          out += markerLegend(shown) + '\n';
+          return out + attribution(source, vintage, kinds.map((k) => (k === 'default' ? info.defaultIndicator : info.recoveryIndicator)));
+        }),
     );
 
-    // Tool 7: Time Series Analysis
-    server.tool(
+    server.registerTool(
+      'get_project_type_analysis',
+      {
+        title: 'Credit risk by project type',
+        description: `Global default and recovery rates by financing type (corporate, project, structured finance, ...). ${SOURCE_DESCRIPTION}`,
+        inputSchema: {
+          projectType: z.enum(PROJECT_TYPE_KEYS).optional().describe('Project type to analyze, or "all" (default) for a comparison table'),
+          data_source: dataSourceParam,
+        },
+        annotations: READ_ONLY,
+      },
+      ({ projectType = 'all', data_source: source = 'public' }) =>
+        guarded(async () => {
+          const info = DATA_SOURCE_INFO[source];
+          const { rows, vintage } = await breakdown(source, GLOBAL_TOTAL, 'PROJECT_TYPE', PROJECT_TYPE_NAMES);
+          const code = PROJECT_TYPES[projectType];
+          const selected = code === '_T' ? rows : rows.filter((r) => r.name === PROJECT_TYPE_NAMES[code]);
+          if (!selected.length || !vintage) {
+            return noData('project type data', [`Project type: ${PROJECT_TYPE_NAMES[code]}`, `Data source: ${source}`]);
+          }
+          let out = `# Credit Risk by Project Type (Global, ${info.label})\n\n` + breakdownTable('Project Type', selected);
+          const withDefault = selected.filter((r) => r.defaultStat);
+          if (withDefault.length > 1) {
+            const lowest = withDefault[0];
+            const highest = withDefault[withDefault.length - 1];
+            out += `\n**Lowest default rate:** ${lowest.name} (${pct(lowest.defaultStat!.rate.value)})\n`;
+            out += `**Highest default rate:** ${highest.name} (${pct(highest.defaultStat!.rate.value)})\n`;
+          }
+          return out + `\n${attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator])}`;
+        }),
+    );
+
+    server.registerTool(
       'get_time_series',
-      'Analyze historical trends in credit risk metrics over time (1994-2024). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .optional()
-          .describe('Region to analyze (defaults to global)'),
-        years: z.number()
-          .optional()
-          .describe('Number of recent years to analyze (default: 10)'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Historical credit risk trend',
+        description: `Annual default or recovery rates over recent years for a region. ${SOURCE_DESCRIPTION} Sovereign history is published for the global aggregate only.`,
+        inputSchema: {
+          region: regionParam.optional().describe('Region to analyze (default: global); income groups have no history'),
+          years: z.number().int().min(1).max(45).optional().describe('Number of most recent published years (default: 10)'),
+          metric: z.enum(['default-rate', 'recovery-rate']).optional().describe('Series to return (default: default-rate)'),
+          data_source: dataSourceParam,
+        },
+        annotations: READ_ONLY,
       },
-      async ({ region = 'global', years = 10, data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        const regionCode = REGION_NAMES[region];
-        const currentYear = new Date().getFullYear();
-        const startYear = currentYear - years;
+      ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'public' }) =>
+        guarded(async () => {
+          const code = AREAS[region];
+          const kind = metric === 'default-rate' ? 'default' : 'recovery';
+          const label = kind === 'default' ? 'Default Rate' : 'Recovery Rate';
+          const history = await getHistory(source, kind, code);
+          const points = history.points.slice(-years);
+          if (!points.length) return noData(`${label.toLowerCase()} history`, [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
 
-        const result = await getTimeSeriesData(regionCode, "_T", "_T", startYear, currentYear, dataSource);
+          const first = points[0];
+          const last = points[points.length - 1];
+          const rates = points.map((p) => p.rate);
+          const change = last.rate - first.rate;
+          // Least-squares slope over the shown years: robust to a noisy first or last year, unlike the endpoints.
+          const meanYear = points.reduce((s, p) => s + p.year, 0) / points.length;
+          const meanRate = rates.reduce((s, r) => s + r, 0) / rates.length;
+          const sxx = points.reduce((s, p) => s + (p.year - meanYear) ** 2, 0);
+          const slope = sxx > 0 ? points.reduce((s, p) => s + (p.year - meanYear) * (p.rate - meanRate), 0) / sxx : 0;
+          const trend =
+            points.length < 3
+              ? 'n/a (fewer than 3 years)'
+              : `${slope > 0.005 ? '📈 Increasing' : slope < -0.005 ? '📉 Decreasing' : '➡️ Flat'} ` +
+                `(${slope > 0 ? '+' : ''}${slope.toFixed(2)} pp per year, least-squares fit)`;
+          const span = last.year - first.year + 1;
 
-        if ('error' in result) {
-          return {
-            content: [{
-              type: 'text',
-              text: `⚠️ **Error retrieving time series data**\n\n${result.error.message}\n\n${result.error.suggestedAction || ''}`
-            }]
-          };
-        }
-
-        const dataPoints = result as TimeSeriesDataPoint[];
-
-        // Calculate trend
-        const firstYear = dataPoints[0];
-        const lastYear = dataPoints[dataPoints.length - 1];
-        const change = lastYear.defaultRate - firstYear.defaultRate;
-        const percentChange = ((change / firstYear.defaultRate) * 100).toFixed(1);
-        const trend = change > 0 ? '📈 Increasing' : change < 0 ? '📉 Decreasing' : '➡️ Stable';
-
-        // Calculate statistics
-        const rates = dataPoints.map(d => d.defaultRate);
-        const avgRate = (rates.reduce((sum, r) => sum + r, 0) / rates.length).toFixed(2);
-        const maxRate = Math.max(...rates).toFixed(2);
-        const minRate = Math.min(...rates).toFixed(2);
-
-        // Build result
-        let resultText = `# Historical Credit Risk Trend: ${REGION_DISPLAY_NAMES[regionCode]}\n\n`;
-        resultText += `**Period:** ${firstYear.year} - ${lastYear.year} (${years} years)\n\n`;
-
-        resultText += `## Summary Statistics\n\n`;
-        resultText += `- **Current Rate (${lastYear.year}):** ${lastYear.defaultRate.toFixed(2)}%\n`;
-        resultText += `- **Average Rate:** ${avgRate}%\n`;
-        resultText += `- **Highest Rate:** ${maxRate}%\n`;
-        resultText += `- **Lowest Rate:** ${minRate}%\n`;
-        resultText += `- **Change:** ${change > 0 ? '+' : ''}${change.toFixed(2)}% (${percentChange}%)\n`;
-        resultText += `- **Trend:** ${trend}\n\n`;
-
-        resultText += `## Year-by-Year Data\n\n`;
-        resultText += `| Year | Default Rate | Change |\n`;
-        resultText += `|------|--------------|--------|\n`;
-
-        dataPoints.forEach((point, index) => {
-          const yearChange = index > 0 ? point.defaultRate - dataPoints[index - 1].defaultRate : 0;
-          const changeStr = index > 0 ? `${yearChange > 0 ? '+' : ''}${yearChange.toFixed(2)}%` : '-';
-          resultText += `| ${point.year} | ${point.defaultRate.toFixed(2)}% | ${changeStr} |\n`;
-        });
-
-        resultText += `\n`;
-        resultText += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: resultText
-          }]
-        };
-      }
+          let out = `# Historical ${label}: ${AREA_NAMES[code]} (${DATA_SOURCE_INFO[source].label})\n\n`;
+          out += `**Period:** ${first.year}–${last.year}`;
+          out += points.length < span ? ` (${points.length} published years)\n\n` : ` (${points.length} years)\n\n`;
+          out += '## Summary\n\n';
+          out += `- **Latest (${last.year}):** ${pct(last.rate)}\n`;
+          out += `- **Average of annual rates:** ${pct(rates.reduce((s, r) => s + r, 0) / rates.length)}\n`;
+          out += `- **Highest:** ${pct(Math.max(...rates))}\n`;
+          out += `- **Lowest:** ${pct(Math.min(...rates))}\n`;
+          out += `- **Change ${first.year}→${last.year}:** ${change > 0 ? '+' : ''}${change.toFixed(2)} pp\n`;
+          out += `- **Trend:** ${trend}\n\n`;
+          out += `## Year-by-Year\n\n| Year | ${label} | Change |\n|---|---|---|\n`;
+          points.forEach((p, i) => {
+            const delta = i > 0 ? p.rate - points[i - 1].rate : undefined;
+            out += `| ${p.year} | ${pct(p.rate)} | ${delta === undefined ? '-' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)} pp`} |\n`;
+          });
+          const conflicts = history.conflictingYears.filter((y) => y >= first.year);
+          if (conflicts.length) {
+            out += `\n⚠️ Data360 returned conflicting values for ${conflicts.join(', ')}; the first listed value is shown.\n`;
+          }
+          const info = DATA_SOURCE_INFO[source];
+          out += `\n*Source: World Bank Data360, IFC GEMs (${kind === 'default' ? info.defaultHistory : info.recoveryHistory}), ${info.label} — ${info.description}.*`;
+          return out;
+        }),
     );
 
-    // Tool 8: Seniority Analysis
-    server.tool(
+    server.registerTool(
       'get_seniority_analysis',
-      'Compare recovery rates by debt seniority (Senior Secured vs Senior Unsecured). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .optional()
-          .describe('Region to analyze (defaults to global)'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Recovery by debt seniority',
+        description: `Recovery rates by debt seniority (senior secured, senior unsecured, subordinated, ...). Published for the global aggregate of public and private data. ${SOURCE_DESCRIPTION}`,
+        inputSchema: { region: regionParam.optional().describe('Region to analyze (default: global)'), data_source: dataSourceParam },
+        annotations: READ_ONLY,
       },
-      async ({ region = 'global', data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        const regionCode = REGION_NAMES[region];
-        const regionName = REGION_DISPLAY_NAMES[regionCode];
+      ({ region = 'global', data_source: source = 'public' }) =>
+        guarded(async () => {
+          const code = AREAS[region];
+          const stats = await getRates(source, 'recovery', { ...GLOBAL_TOTAL, REF_AREA: code }, 'SENIORITY');
+          const levels = [...stats.values()].filter((s) => s.code !== '_T').sort((a, b) => b.rate.value - a.rate.value);
+          if (!levels.length) return noData('seniority breakdown', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
 
-        // Fetch recovery rates for both seniority levels
-        const [ssResult, suResult] = await Promise.all([
-          getSeniorityRecoveryData('SS', regionCode, dataSource),
-          getSeniorityRecoveryData('SU', regionCode, dataSource)
-        ]);
-
-        // Handle errors
-        if (!ssResult.success || !suResult.success) {
-          const error = !ssResult.success ? ssResult.error : suResult.error;
-
-          return {
-            content: [{
-              type: 'text',
-              text: `⚠️ **Error retrieving seniority data**\n\n` +
-                    `${error!.message}\n\n` +
-                    `${error!.suggestedAction || ''}\n\n` +
-                    `**Note:** Seniority data may only be available at the global level.`
-            }]
-          };
-        }
-
-        const ssRate = ssResult.data!;
-        const suRate = suResult.data!;
-        const securityPremium = ssRate - suRate;
-
-        // Build result
-        let resultText = `# Debt Seniority Analysis: ${regionName}\n\n`;
-
-        resultText += `## Recovery Rates by Seniority\n\n`;
-        resultText += `| Seniority Level | Recovery Rate | Risk Level |\n`;
-        resultText += `|-----------------|---------------|------------|\n`;
-        resultText += `| **Senior Secured (SS)** | ${ssRate.toFixed(2)}% | Lower Risk |\n`;
-        resultText += `| **Senior Unsecured (SU)** | ${suRate.toFixed(2)}% | Higher Risk |\n\n`;
-
-        resultText += `## Key Metrics\n\n`;
-        resultText += `- **Security Premium:** ${securityPremium.toFixed(2)}%\n`;
-        resultText += `- **Relative Advantage:** ${((securityPremium / suRate) * 100).toFixed(1)}% better recovery for secured debt\n\n`;
-
-        resultText += `## Analysis\n\n`;
-        if (securityPremium > 10) {
-          resultText += `**Significant security premium detected.** Collateralized loans recover ${securityPremium.toFixed(2)}% more than uncollateralized loans, highlighting the importance of security in credit structuring.\n\n`;
-        } else if (securityPremium > 5) {
-          resultText += `**Moderate security premium.** Collateral provides a ${securityPremium.toFixed(2)}% recovery advantage, demonstrating tangible risk mitigation benefits.\n\n`;
-        } else {
-          resultText += `**Limited security premium.** The ${securityPremium.toFixed(2)}% difference suggests other factors may be more significant in determining recovery rates.\n\n`;
-        }
-
-        resultText += `**Implications for Lending:**\n`;
-        resultText += `- Senior secured loans offer ${ssRate.toFixed(2)}% average recovery on default\n`;
-        resultText += `- Senior unsecured loans offer ${suRate.toFixed(2)}% average recovery on default\n`;
-        resultText += `- Security reduces expected loss by ${securityPremium.toFixed(2)} percentage points\n\n`;
-
-        resultText += `*Period: 1994-2024*\n\n`;
-        resultText += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: resultText
-          }]
-        };
-      }
+          let out = `# Recovery by Debt Seniority: ${AREA_NAMES[code]} (${DATA_SOURCE_INFO[source].label})\n\n`;
+          out += '| Seniority | Recovery Rate | Sample |\n|---|---|---|\n';
+          for (const s of levels) {
+            const sample = s.defaults !== undefined ? `${s.defaults.toLocaleString('en-US')} ${s.defaultsUnit}` : '';
+            out += `| ${SENIORITY_NAMES[s.code] ?? s.code} | ${pct(s.rate.value)} | ${sample} |\n`;
+          }
+          for (const s of levels) out += ambiguityNote(SENIORITY_NAMES[s.code] ?? s.code, s.rate);
+          const ss = stats.get('SS');
+          const su = stats.get('SU');
+          if (ss && su) {
+            const premium = ss.rate.value - su.rate.value;
+            out += `\n**Security premium (secured − unsecured):** ${premium.toFixed(2)} pp of recovery\n`;
+          }
+          const overall = stats.get('_T');
+          if (overall) out += `**All seniority levels:** ${pct(overall.rate.value)}\n${ambiguityNote('All seniority levels', overall.rate)}`;
+          return out + `\n${attribution(source, levels[0].vintage, [DATA_SOURCE_INFO[source].recoveryIndicator])}`;
+        }),
     );
 
-    // Tool 9: Multi-Dimensional Query
-    server.tool(
+    server.registerTool(
       'query_multidimensional',
-      'Query credit risk data with multiple filters (region + sector + project type). Data sources: "sovereign" (national government debt, lowest risk), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, largest dataset)',
       {
-        region: z.enum(['global', 'east-asia', 'latin-america', 'sub-saharan-africa', 'south-asia', 'mena', 'europe-central-asia'])
-          .optional()
-          .describe('Region filter (defaults to global)'),
-        sector: z.enum([
-          'all', 'overall',
-          'non-financial', 'financial-institutions', 'banking', 'infrastructure',
-          'non-banking', 'renewables', 'services',
-          'financials', 'utilities', 'industrials', 'consumer-staples',
-          'consumer-discretionary', 'materials', 'others', 'communication-services',
-          'health-care', 'energy', 'real-estate', 'information-technology', 'administration'
-        ])
-          .optional()
-          .describe('Sector filter (defaults to all sectors)'),
-        projectType: z.enum([
-          'all', 'overall',
-          'corporate-finance', 'project-finance', 'financial-institutions',
-          'structured-finance', 'mixed', 'other'
-        ])
-          .optional()
-          .describe('Project type filter (defaults to all project types)'),
-        data_source: z.enum(['sovereign', 'public', 'private']).optional()
-          .describe('Data source: "sovereign" (national government debt), "public" (sub-sovereign/public sector), or "private" (corporate/private sector, recommended for most use cases). Default: public')
+        title: 'Multi-dimensional credit risk query',
+        description: `Default and recovery rates for a region + sector + project type combination. Most combinations beyond one filter are not published. ${SOURCE_DESCRIPTION}`,
+        inputSchema: {
+          region: regionParam.optional().describe('Region filter (default: global)'),
+          sector: z.enum(SECTOR_KEYS).optional().describe('Sector filter (default: all sectors)'),
+          projectType: z.enum(PROJECT_TYPE_KEYS).optional().describe('Project type filter (default: all project types)'),
+          data_source: dataSourceParam,
+        },
+        annotations: READ_ONLY,
       },
-      async ({ region = 'global', sector = 'all', projectType = 'all', data_source }) => {
-        const dataSource: DataSource = data_source as DataSource || 'public';
-        // Map user-friendly names to codes
-        const regionCode = REGION_NAMES[region];
-        const regionName = REGION_DISPLAY_NAMES[regionCode];
+      ({ region = 'global', sector = 'all', projectType = 'all', data_source: source = 'public' }) =>
+        guarded(async () => {
+          const slice: Slice = { ...GLOBAL_TOTAL, REF_AREA: AREAS[region], SECTOR: SECTORS[sector], PROJECT_TYPE: PROJECT_TYPES[projectType] };
+          const filters = [
+            `Region: ${AREA_NAMES[slice.REF_AREA]}`,
+            `Sector: ${SECTOR_NAMES[slice.SECTOR]}`,
+            `Project type: ${PROJECT_TYPE_NAMES[slice.PROJECT_TYPE]}`,
+            `Data source: ${source}`,
+          ];
+          const [dr, rr, global] = await Promise.all([
+            single(source, 'default', slice),
+            single(source, 'recovery', slice),
+            single(source, 'default', GLOBAL_TOTAL),
+          ]);
+          if (!dr && !rr) return noData('data', filters);
 
-        const sectorMapping: Record<string, string> = {
-          'all': '_T', 'overall': '_T',
-          'non-financial': 'NF', 'financial-institutions': 'FI', 'banking': 'BK',
-          'infrastructure': 'IN', 'non-banking': 'NB', 'renewables': 'R', 'services': 'S',
-          'financials': 'F', 'utilities': 'U', 'industrials': 'I',
-          'consumer-staples': 'CST', 'consumer-discretionary': 'CD', 'materials': 'M',
-          'others': 'O', 'communication-services': 'CS', 'health-care': 'HC',
-          'energy': 'E', 'real-estate': 'RE', 'information-technology': 'IT', 'administration': 'A',
-        };
+          let out = `# Multi-Dimensional Credit Risk Analysis\n\n## Filters\n\n${filters.map((f) => `- ${f}`).join('\n')}\n\n`;
+          out += '## Risk Metrics\n\n| Metric | Value |\n|---|---|\n';
+          out += `| Default rate | ${dr ? defaultRateText(dr) : 'not published'} |\n`;
+          out += `| Recovery rate | ${rr ? pct(rr.rate.value) : 'not published'} |\n`;
+          out += `| Expected loss | ${dr && rr ? pct(expectedLoss(dr.rate.value, rr.rate.value)) : 'n/a'} |\n`;
+          if (dr) out += ambiguityNote('Default rate', dr.rate);
+          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
+          out += '\n';
+          out += sampleLines(dr, rr);
+          if (dr) out += '\n' + benchmarkLine(source, dr.rate.value, global);
+          const info = DATA_SOURCE_INFO[source];
+          return out + attribution(source, (dr ?? rr)!.vintage, [info.defaultIndicator, info.recoveryIndicator]);
+        }),
+    );
 
-        const projectTypeMapping: Record<string, string> = {
-          'all': '_T', 'overall': '_T',
-          'corporate-finance': 'CF', 'project-finance': 'PF',
-          'financial-institutions': 'FI', 'structured-finance': 'SF',
-          'mixed': 'MX', 'other': 'O',
-        };
+    server.registerTool(
+      'get_country_risk',
+      {
+        title: 'Country credit risk',
+        description:
+          'Credit risk profile for one country: default rate with 90% confidence interval, recovery rate, expected loss, ' +
+          'sample size, sector breakdown and recent annual default rates. Country statistics exist for private sector ' +
+          'lending (90 countries) and public sector lending (14 countries); none for sovereign. Default data source: private.',
+        inputSchema: {
+          country: z.string().min(2).max(60).describe('ISO3 code (e.g. "KEN") or English country name (e.g. "Kenya")'),
+          years: z.number().int().min(1).max(45).optional().describe('Years of annual default-rate history (default: 10)'),
+          data_source: z.enum(['private', 'public']).optional().describe('"private" (default) or "public"'),
+        },
+        annotations: READ_ONLY,
+      },
+      ({ country, years = 10, data_source: source = 'private' }) =>
+        guarded(async () => {
+          const match = resolveCountry(country);
+          if ('error' in match) return `ℹ️ ${match.error}`;
+          const code = match.code;
+          const name = areaName(code);
+          const info = DATA_SOURCE_INFO[source];
+          const slice = { ...GLOBAL_TOTAL, REF_AREA: code };
+          const [sectors, history, global] = await Promise.all([
+            breakdown(source, slice, 'SECTOR', SECTOR_NAMES),
+            getHistory(source, 'default', code),
+            single(source, 'default', GLOBAL_TOTAL),
+          ]);
+          const dr = sectors.defaults.get('_T');
+          const rr = sectors.recoveries.get('_T');
+          if (!dr && !rr) {
+            const available = await countriesWithData(source);
+            return (
+              noData('country data', [`Country: ${name} (${code})`, `Data source: ${source}`]) +
+              `\n\nCountries with ${source} data (${available.length}): ` +
+              (available.length ? available.map((c) => `${COUNTRY_NAMES[c]} (${c})`).join(', ') : 'none')
+            );
+          }
 
-        const sectorCode = sectorMapping[sector] || '_T';
-        const sectorName = SECTOR_NAMES[sectorCode] || sectorCode;
-        const projectTypeCode = projectTypeMapping[projectType] || '_T';
-        const projectTypeName = PROJECT_TYPE_NAMES[projectTypeCode] || projectTypeCode;
+          const vintage = (dr ?? rr)!.vintage;
+          let out = `# Country Credit Risk: ${name} (${info.label})\n\n## Key Metrics\n\n`;
+          out += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
+          out += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          if (dr && rr) out += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))} per year\n`;
+          out += `**Period:** ${period(source, vintage)}\n`;
+          out += sampleLines(dr, rr);
+          if (dr) out += ambiguityNote('Default rate', dr.rate);
+          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
+          if (dr?.counterparts !== undefined && dr.counterparts < 100) {
+            out += `\n⚠️ Small sample (${dr.counterparts} counterparts): treat the rate as indicative and weigh the confidence interval.\n`;
+          }
+          out += '\n';
+          if (dr) out += benchmarkLine(source, dr.rate.value, global);
 
-        // Fetch data with all filters
-        const params = {
-          DATABASE_ID: IFC_GEM_DATASET,
-          INDICATOR: INDICATOR_MAP[dataSource].default,  // Use appropriate default indicator based on data source
-          METRIC: "ADR",
-          REF_AREA: regionCode,
-          SECTOR: sectorCode,
-          PROJECT_TYPE: projectTypeCode,
-          TIME_PERIOD: getLatestPeriodCached(),
-        };
+          if (sectors.rows.length) out += `## By Sector\n\n${breakdownTable('Sector', sectors.rows)}\n`;
 
-        const result = await fetchData360(params);
-
-        if (!result.success) {
-          const error = result.error!;
-          return {
-            content: [{
-              type: 'text',
-              text: `⚠️ **Error retrieving multi-dimensional data**\n\n` +
-                    `${error.message}\n\n` +
-                    `${error.suggestedAction || ''}\n\n` +
-                    `**Query Parameters:**\n` +
-                    `- Region: ${regionName}\n` +
-                    `- Sector: ${sectorName}\n` +
-                    `- Project Type: ${projectTypeName}`
-            }]
-          };
-        }
-
-        if (result.data!.value.length === 0) {
-          return {
-            content: [{
-              type: 'text',
-              text: `ℹ️ **No data available for this combination**\n\n` +
-                    `**Filters Applied:**\n` +
-                    `- Region: ${regionName}\n` +
-                    `- Sector: ${sectorName}\n` +
-                    `- Project Type: ${projectTypeName}\n\n` +
-                    `**Suggestions:**\n` +
-                    `- Try broader filters (e.g., all sectors or all project types)\n` +
-                    `- Use global region instead of specific region\n` +
-                    `- This combination may have insufficient sample size`
-            }]
-          };
-        }
-
-        const latestData = result.data!.value[0];
-        const defaultRate = parseFloat(latestData.OBS_VALUE);
-
-        // Get recovery rate for this region using the correct data source (fixes data source mismatch bug)
-        const recoveryResult = await getRecoveryRateData(regionCode, dataSource);
-        const recoveryRate = recoveryResult.success ? recoveryResult.data! : estimateRecoveryRate(defaultRate);
-        const isRecoveryEstimated = !recoveryResult.success;
-
-        const expectedLoss = (defaultRate * (100 - recoveryRate) / 100).toFixed(2);
-
-        // Build result
-        let resultText = `# Multi-Dimensional Credit Risk Analysis\n\n`;
-
-        resultText += `## Query Parameters\n\n`;
-        resultText += `- **Region:** ${regionName}\n`;
-        resultText += `- **Sector:** ${sectorName}\n`;
-        resultText += `- **Project Type:** ${projectTypeName}\n\n`;
-
-        resultText += `## Risk Metrics\n\n`;
-        resultText += `| Metric | Value |\n`;
-        resultText += `|--------|-------|\n`;
-        resultText += `| **Default Rate** | ${defaultRate.toFixed(2)}% |\n`;
-        resultText += `| **Recovery Rate** | ${recoveryRate.toFixed(2)}%${isRecoveryEstimated ? ' (estimated)' : ''} |\n`;
-        resultText += `| **Expected Loss** | ${expectedLoss}% |\n\n`;
-
-        resultText += `## Risk Assessment\n\n`;
-        const globalAvg = 3.5;
-        const comparison = defaultRate < globalAvg ? 'below' : defaultRate > globalAvg ? 'above' : 'at';
-        const diff = Math.abs(defaultRate - globalAvg).toFixed(2);
-
-        resultText += `Default rate is **${comparison} global average** (3.5%) by ${diff} percentage points.\n\n`;
-
-        if (defaultRate < 2.5) {
-          resultText += `**Low Risk:** This combination shows significantly lower default risk.\n\n`;
-        } else if (defaultRate < 3.5) {
-          resultText += `**Below Average Risk:** This combination performs better than the global average.\n\n`;
-        } else if (defaultRate < 4.5) {
-          resultText += `**Above Average Risk:** This combination shows elevated default risk.\n\n`;
-        } else {
-          resultText += `**High Risk:** This combination shows significantly higher default risk.\n\n`;
-        }
-
-        resultText += `**Sample Size Note:** More specific filters may have smaller sample sizes and higher variance.\n\n`;
-
-        if (isRecoveryEstimated) {
-          resultText += `*Recovery rate approximated using statistical correlation*\n\n`;
-        }
-
-        resultText += getDataSourceAttribution(dataSource);
-
-        return {
-          content: [{
-            type: 'text',
-            text: resultText
-          }]
-        };
-      }
+          const points = history.points.slice(-years);
+          if (points.length) {
+            out += `## Annual Default Rates (${points[0].year}–${points[points.length - 1].year})\n\n| Year | Default Rate |\n|---|---|\n`;
+            for (const p of points) out += `| ${p.year} | ${pct(p.rate)} |\n`;
+            out += '\n';
+          }
+          return out + attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator, info.defaultHistory]);
+        }),
     );
   },
-  undefined,
-  { basePath: "/api/gems-risk" }
+  { serverInfo: { name: 'gems-risk', version: pkg.version } },
+  // SSE needs Redis, which this deployment does not use; streamable HTTP at /mcp is the supported transport.
+  { basePath: '/api/gems-risk', disableSse: true },
 );
 
-// Export as named HTTP methods for MCP protocol (GET, POST, DELETE required)
 export { handler as GET, handler as POST, handler as DELETE };

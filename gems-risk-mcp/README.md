@@ -14,7 +14,7 @@ This MCP server enables AI assistants (like Claude) to query credit risk data fo
 - **Public Sector** - Sub-sovereign entities and state-owned enterprises (SOEs)
 - **Private Sector** - Corporate and private sector lending (largest dataset)
 
-You can analyze default rates, recovery rates, expected losses, and historical trends across 7 global regions, 15 economic sectors, and 40+ years of data.
+You can analyze default rates, recovery rates, expected losses, and historical trends across 7 regions, 21 sector categories (IFC + GICS), 6 project types, and debt seniority, with annual history back to 1984 (sovereign) and 1994 (public and private).
 
 ---
 
@@ -27,13 +27,13 @@ You can analyze default rates, recovery rates, expected losses, and historical t
 - **Country Risk** - Assess sovereign debt default probabilities
 
 ### For Development Finance
-- **Project Evaluation** - Analyze historical performance by project type (infrastructure, manufacturing, etc.)
+- **Project Evaluation** - Analyze historical performance by financing type (project finance, corporate finance, structured finance, etc.)
 - **Seniority Analysis** - Compare senior vs subordinated debt recovery rates
 - **Time Series Trends** - Track how credit risk has evolved over decades
 
 ### For Research & Education
 - **Emerging Markets Research** - Access authoritative IFC credit risk data
-- **Historical Analysis** - Study credit cycles from 1984-2024
+- **Historical Analysis** - Study credit cycles from 1984 (sovereign) / 1994 (public, private) to 2025
 - **Risk Modeling** - Use real-world data for credit risk models
 
 ---
@@ -95,10 +95,10 @@ If your MCP client supports direct HTTP connections:
 
 ## 📊 Available Tools
 
-The server provides **9 specialized tools** for querying credit risk data:
+The server provides **10 specialized tools** for querying credit risk data. `region` parameters accept the 7 regions and 4 World Bank income groups (`high-income`, `upper-middle-income`, `lower-middle-income`, `low-income`). Default rates come with their 90% confidence interval where GEMs publishes one.
 
 ### 1. `get_default_rates`
-Query average default frequencies by region
+Query average default rates by region or income group, with confidence interval and sample size
 
 **Example:**
 ```
@@ -122,31 +122,32 @@ Show me the complete credit risk profile for MENA region
 ```
 
 ### 4. `compare_regions`
-Compare default and recovery rates across all regions
+Rank regions, income groups (`grouping: "income"`) or countries (`grouping: "country"`) by default and/or recovery rate, with sample sizes
 
 **Example:**
 ```
 Compare default rates across all regions for sovereign debt
+Rank countries by private sector default rate
 ```
 
 ### 5. `get_sector_analysis`
-Analyze credit performance by economic sector (manufacturing, construction, etc.)
+Global default and recovery rates by sector (IFC categories such as banking, infrastructure, renewables; GICS sectors such as energy, utilities)
 
 **Example:**
 ```
-What's the default rate for infrastructure projects in East Asia?
+What's the private sector default rate for infrastructure lending?
 ```
 
 ### 6. `get_project_type_analysis`
-Compare credit risk across project types (greenfield, expansion, privatization)
+Compare credit risk across financing types (corporate finance, project finance, financial institutions, structured finance, real estate)
 
 **Example:**
 ```
-Compare greenfield vs expansion projects in terms of credit risk
+Compare project finance vs corporate finance in terms of credit risk
 ```
 
 ### 7. `get_time_series`
-Track default and recovery rates over time
+Track annual default or recovery rates over time
 
 **Example:**
 ```
@@ -154,7 +155,7 @@ Show me the 10-year default rate trend for South Asia
 ```
 
 ### 8. `get_seniority_analysis`
-Compare senior vs subordinated debt recovery rates
+Compare recovery rates by seniority (senior secured, senior unsecured, subordinated; global level)
 
 **Example:**
 ```
@@ -162,11 +163,19 @@ How much better do senior loans perform than subordinated debt?
 ```
 
 ### 9. `query_multidimensional`
-Advanced multi-dimensional queries across sector, project type, and seniority
+Combine region, sector, and project type filters (most multi-filter combinations are not published)
 
 **Example:**
 ```
-What's the default rate for senior infrastructure loans in Latin America?
+What's the private sector default rate for energy companies globally?
+```
+
+### 10. `get_country_risk`
+Country profile: default rate with confidence interval, recovery rate, expected loss, sample size, sector breakdown and annual default rates. Accepts ISO3 codes or English names; private sector data covers 90 countries, public sector 14, sovereign none. Defaults to `data_source: "private"`.
+
+**Example:**
+```
+What's the credit risk of lending to Kenyan companies?
 ```
 
 ---
@@ -182,21 +191,29 @@ What's the default rate for senior infrastructure loans in Latin America?
 - **Middle East & North Africa** (MENA)
 - **Europe & Central Asia** (ECA)
 
-### Economic Sectors (15 total)
-Agriculture, Manufacturing, Construction, Utilities, Commerce, Transportation, Financial Institutions, Health/Education, Infrastructure, Mining, Oil & Gas, Services, Telecom, Tourism, and more.
+### Income Groups
+High, upper-middle, lower-middle and low income (World Bank classification).
+
+### Countries
+90 countries for private sector lending (default rates, with recoveries for 55), 14 for public sector lending.
+
+### Sectors (21 categories)
+IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Sector breakdowns are published at the global level.
 
 ### Project Types
-Greenfield, Expansion, Modernization, Privatization, Financial Restructuring, and more.
+Corporate Finance, Project Finance, Financial Institutions, Structured Finance, Real Estate (private), Other (public recovery only).
 
 ### Data Sources (3 Economic Sectors)
 
 All tools accept an optional `data_source` parameter:
 
-- **`"sovereign"`** - National government debt (0.77% default rate, 95% recovery)
-- **`"public"`** - Sub-sovereign/SOE lending (1.89% default rate, 93% recovery)
-- **`"private"`** - Corporate lending (3.39% default rate, 72% recovery) - **Most common**
+- **`"sovereign"`** - Sovereign and sovereign-guaranteed debt (0.79% default rate, 1984–2025)
+- **`"public"`** - Sub-sovereign/SOE lending (1.92% default rate, 80.35% recovery)
+- **`"private"`** - Corporate lending (3.45% default rate, 69.75% recovery) - **largest sample**
 
-**Default:** If not specified, queries use `"public"` sector data for backward compatibility.
+Figures are the global averages from the 2025 GEMs publication on Data360.
+
+**Default:** If not specified, queries use `"public"` sector data for backward compatibility. Exception: `get_country_risk` defaults to `"private"`, the only source with broad country coverage.
 
 ---
 
@@ -207,8 +224,23 @@ All tools accept an optional `data_source` parameter:
 - **Source:** World Bank Data360 API
 - **Dataset:** IFC_GEM (Global Emerging Markets Risk Database)
 - **Authority:** International Finance Corporation (IFC) - World Bank Group
-- **Coverage:** 40+ years of emerging market credit data (1984-2024)
-- **Data Points:** 8,000+ default and recovery observations
+- **Coverage:** sovereign 1984–2025, public and private sector 1994–2025 (2025 publication vintage)
+- **Units:** rates in percent; signed amounts in EUR millions, as published by GEMs
+
+### How the server reads Data360
+
+- **Snapshot vs. history:** `IFC_GEM_SD/PBD/PRD` (defaults) and `IFC_GEM_SR/PBR/PRR` (recoveries) hold one `TIME_PERIOD` — the publication vintage — with period averages. Annual values come from the `_H` indicators. The server always reads the latest vintage present, so a new publication is picked up without code changes.
+- **Global aggregate:** `REF_AREA=WLD`.
+- **Hidden breakdowns:** some snapshot rows are split by dimensions the Data360 API neither returns nor filters (e.g. credit enhancement), so one query can match several values. Default rates resolve exactly: the headline equals defaults ÷ observations of the full sample. Recovery rates use the period average reconstructed from the annual series (exact for global totals), else the value at published precision, else the first listed. Single-value responses list every value Data360 returned; ranking and breakdown tables mark ambiguous rates with † (resolved) or ‡ (uncertain).
+- **Confidence intervals:** Data360 publishes some regional sector intervals with lower and upper bounds swapped; the server orders them.
+- **Reliability:** responses are cached for an hour per instance; timeouts, network errors and 5xx responses are retried once; if a refresh fails, the last good response is served.
+
+## 🧪 Development
+
+```bash
+npm test     # regression tests on real Data360 rows (lib/gems-risk/__fixtures__)
+npm run dev  # MCP endpoint at http://localhost:3000/api/gems-risk/mcp
+```
 
 ### Data Quality
 
@@ -239,23 +271,23 @@ Compare sovereign vs corporate default risk in Sub-Saharan Africa
 
 ### Sector-Specific
 ```
-What's the default rate for infrastructure projects?
-How risky is manufacturing sector lending in South Asia?
-Compare construction vs utilities sector credit risk
+What's the default rate for infrastructure lending?
+Which GICS sectors have the highest private sector default rates?
+Compare banking vs utilities sector credit risk
 ```
 
 ### Time Series
 ```
 Show me the 10-year default rate trend for global emerging markets
 How has MENA's recovery rate changed over the last 5 years?
-Track sovereign default rates from 2014-2024
+Track sovereign default rates since 1984
 ```
 
 ### Advanced Queries
 ```
-What's the recovery rate for senior infrastructure debt in Latin America?
-Compare greenfield vs expansion projects for default risk
-Analyze subordinated debt recovery across all regions
+What's the recovery rate for senior secured private sector debt?
+Compare project finance vs corporate finance for default risk
+How do subordinated recoveries compare with senior unsecured?
 ```
 
 ---
@@ -263,24 +295,24 @@ Analyze subordinated debt recovery across all regions
 ## 🔍 Understanding the Metrics
 
 ### Default Rate (ADR)
-**What it is:** Percentage of loans that default (fail to repay)
-**Interpretation:** Lower is better. 1% means 1 in 100 loans default.
-**Range:** Typically 0.5% - 5% for emerging markets
+**What it is:** Average annual share of counterparts that default, weighted by observations over the coverage period
+**Interpretation:** Lower is better. 1% means 1 in 100 performing counterparts defaults in a typical year.
+**Range:** Roughly 0.5% - 6.5% across regions and sectors
 
 ### Recovery Rate (ARR)
-**What it is:** Percentage of loan value recovered when defaults occur
-**Interpretation:** Higher is better. 80% means lenders recover 80 cents per dollar.
-**Range:** Typically 50% - 95% for emerging markets
+**What it is:** Discounted post-default cash flows as a share of the outstanding amount at default
+**Interpretation:** Higher is better. 80% means lenders recover 80 cents per unit of exposure.
+**Range:** Roughly 40% - 95% across breakdowns
 
 ### Expected Loss
 **What it is:** Combined measure accounting for both default probability and loss severity
 **Calculation:** `Default Rate × (1 - Recovery Rate)`
 **Interpretation:** Overall expected loss on a portfolio. Lower is better.
 
-**Example (MENA Region - Private Sector):**
-- Default Rate: 3.39%
-- Recovery Rate: 71.70%
-- Expected Loss: 3.39% × (1 - 0.717) = **0.96%**
+**Example (Global - Private Sector, 2025 vintage):**
+- Default Rate: 3.45%
+- Recovery Rate: 69.75%
+- Expected Loss: 3.45% × (1 - 0.6975) = **1.04%**
 
 ---
 
@@ -302,12 +334,12 @@ Compare the credit risk across all emerging market regions
 
 **You ask Claude:**
 ```
-I'm considering infrastructure lending in Latin America. What's the credit risk?
+I'm considering private infrastructure lending. What's the credit risk?
 ```
 
 **Claude uses:**
-- `get_sector_analysis` for infrastructure sector in LAC region
-- `get_seniority_analysis` to show senior vs subordinated performance
+- `get_sector_analysis` for the infrastructure sector (global)
+- `get_seniority_analysis` to show secured vs unsecured recoveries
 - Provides context comparing to other sectors
 
 ### Example 3: Historical Trend Analysis
@@ -384,10 +416,12 @@ You don't need to know the technical parameters:
 - Subsequent queries are faster (server warm-up)
 - This is normal for real-time API data
 
-### "No data available" responses
-- World Bank API may be temporarily unavailable
-- The server has automatic fallback to cached data
-- Try again in a few moments
+### "No data published" responses
+- Many breakdowns (e.g. sector × region, sovereign by sector) are not published by IFC GEMs; the response lists the filters that had no data
+- Try region `global` or `data_source: "private"`, which has the widest coverage
+
+### "Data360 request failed" errors
+- The World Bank Data360 API was unreachable, slow (timeouts, network errors and 5xx are retried once automatically), or rate limited (HTTP 429 is not retried), and no earlier response was cached; retry in a few minutes
 
 ### Connection issues
 - Verify your internet connection
@@ -411,24 +445,31 @@ You don't need to know the technical parameters:
 
 ## 📖 Version Information
 
-**Current Version:** 2.0
-**Data Coverage:** 1984-2024 (40 years)
-**Tools Available:** 9
-**Supported Regions:** 7
-**Economic Sectors:** 15
+**Current Version:** 1.2.0
+**Data Coverage:** 2025 GEMs publication (sovereign 1984–2025, public and private 1994–2025)
+**Tools Available:** 10
+**Supported Regions:** 7 regions + 4 income groups + 90 countries
+**Sector Categories:** 21
 **Data Sources:** 3 (Sovereign, Public, Private)
-**Total Indicators:** 6 of 11 implemented (54.5% coverage)
 
 ---
 
-## ✨ What's New in Version 2.0
+## ✨ What's New in 1.2.0
 
-- ✅ **Three Economic Sectors** - Added sovereign and private sector data sources
-- ✅ **Enhanced Tool Coverage** - Expanded from 5 to 9 specialized tools
-- ✅ **Smart Detection** - Automatic data source selection from query context
-- ✅ **Time Series Analysis** - Multi-year trend tracking
-- ✅ **Seniority Analysis** - Senior vs subordinated debt comparison
-- ✅ **Multidimensional Queries** - Complex cross-sector analysis
+- ✅ **Live data restored** - Queries read the latest publication vintage instead of the current calendar year, and the global aggregate uses `WLD`; every tool returned "no data" before
+- ✅ **No synthetic numbers** - Removed hard-coded fallback figures and the formula-based recovery estimate; unpublished breakdowns are reported as such
+- ✅ **Correct recoveries** - Sector and project-type recoveries come from the matching breakdown instead of the regional total
+- ✅ **Ambiguity resolved** - Rows split by dimensions the Data360 API hides are resolved (exactly, for default rates) and disclosed (see "How the server reads Data360")
+- ✅ **Countries & income groups** - New `get_country_risk` tool; `compare_regions` ranks income groups and countries; region parameters accept income groups
+- ✅ **Confidence intervals** - Default rates include GEMs' 90% confidence interval
+- ✅ **Time series from annual indicators** - One request per series instead of one per year; recovery-rate history added
+- ✅ **Seniority & project types** - All published seniority levels (incl. subordinated) and project types (incl. real estate); the non-existent "mixed" project type was removed
+- ✅ **Units** - Signed amounts reported in EUR as published, sample sizes in counterparts/defaults instead of "loans"
+- ✅ **Benchmarks** - Comparisons use the live global average of the same data source instead of a fixed 3.5%
+- ✅ **Reliability** - One automatic retry on transient Data360 failures, last-good-response fallback, parallel page fetches
+- ✅ **Trends** - Time-series trend uses a least-squares slope (pp per year) instead of first-vs-last year
+- ✅ **Transport** - Streamable HTTP at `/api/gems-risk/mcp` only; the Redis-backed SSE endpoint (which returned HTTP 500 without Redis) is disabled
+- ✅ **Tests** - `npm test` runs regression tests against real Data360 rows
 
 ---
 
