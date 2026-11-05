@@ -1,7 +1,7 @@
-export default function GemsRiskPage() {
-  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://mcp.akgunaylabs.io';
-  const mcpEndpoint = `${baseUrl}/api/gems-risk/mcp`;
+// Server component, prerendered at build time: there is no window to read the origin from.
+const mcpEndpoint = 'https://mcp.akgunaylabs.io/api/gems-risk/mcp';
 
+export default function GemsRiskPage() {
   return (
     <main style={{
       padding: '2rem',
@@ -26,12 +26,12 @@ export default function GemsRiskPage() {
           Query credit risk data across <strong>three economic sectors</strong>:
         </p>
         <ul style={{ lineHeight: '1.8' }}>
-          <li><strong>Sovereign</strong> - National government debt and sovereign bonds (lowest risk: 0.77% default rate)</li>
+          <li><strong>Sovereign</strong> - Sovereign and sovereign-guaranteed debt (lowest-risk segment, history from 1984)</li>
           <li><strong>Public Sector</strong> - Sub-sovereign entities and state-owned enterprises</li>
-          <li><strong>Private Sector</strong> - Corporate and private sector lending (largest dataset: 2,853 observations)</li>
+          <li><strong>Private Sector</strong> - Corporate and private sector lending (largest sample)</li>
         </ul>
         <p>
-          Analyze <strong>7 global regions</strong>, <strong>15 economic sectors</strong>, and <strong>40+ years</strong> of credit risk data (1984-2024).
+          Analyze <strong>7 global regions</strong>, <strong>21 sector categories</strong> (IFC + GICS), project types, debt seniority, and annual history back to 1984 (sovereign) / 1994 (public and private).
         </p>
       </section>
 
@@ -125,14 +125,20 @@ export default function GemsRiskPage() {
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>8. get_seniority_analysis</strong>
-            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Compare senior vs subordinated debt recovery rates</p>
-            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Senior vs subordinated debt recovery rates"</code>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Recovery rates by seniority (senior secured, senior unsecured, subordinated)</p>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Senior secured vs unsecured recovery rates for private lending"</code>
           </div>
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>9. query_multidimensional</strong>
-            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Advanced queries across sector, project type, and seniority</p>
-            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Senior infrastructure loans in Latin America"</code>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Combine region, sector, and project type filters</p>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Default rate for project finance loans, private sector"</code>
+          </div>
+
+          <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
+            <strong style={{ color: '#0066cc' }}>10. get_country_risk</strong>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Country profile with confidence interval, sectors and annual history</p>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Credit risk of lending to Kenyan companies"</code>
           </div>
         </div>
       </section>
@@ -168,8 +174,8 @@ export default function GemsRiskPage() {
           <div>
             <h3 style={{ fontSize: '1rem', color: '#0066cc', marginBottom: '0.5rem' }}>Data Quality</h3>
             <ul style={{ margin: 0, paddingLeft: '1.5rem', fontSize: '0.9rem' }}>
-              <li>40+ years (1984-2024)</li>
-              <li>8,000+ observations</li>
+              <li>Annual history from 1984 (sovereign) / 1994</li>
+              <li>Publication vintage 2025</li>
               <li>Real-time API</li>
               <li>Authoritative IFC data</li>
             </ul>
@@ -203,8 +209,8 @@ export default function GemsRiskPage() {
           </p>
           <ul style={{ margin: 0, lineHeight: '1.8' }}>
             <li><strong>Authority:</strong> International Finance Corporation (IFC) - World Bank Group</li>
-            <li><strong>Coverage:</strong> 40+ years of emerging market credit data (1984-2024)</li>
-            <li><strong>Data Points:</strong> 8,000+ default and recovery observations</li>
+            <li><strong>Coverage:</strong> sovereign 1984–2025, public and private sector 1994–2025 (2025 publication)</li>
+            <li><strong>Units:</strong> rates in percent; signed amounts in EUR millions as published by GEMs</li>
             <li><strong>Access:</strong> Real-time API, no authentication required, publicly available</li>
             <li><strong>Privacy:</strong> Aggregated regional/sectoral statistics, no personal data</li>
           </ul>
@@ -255,22 +261,20 @@ export default function GemsRiskPage() {
       <section style={{ marginBottom: '2rem', background: '#f0f5ff', padding: '1.5rem', borderRadius: '8px', border: '1px solid #adc6ff' }}>
         <h2 style={{ color: '#333', marginTop: 0 }}>📖 Version Information</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.5rem', fontSize: '0.9rem' }}>
-          <div><strong>Version:</strong> 2.0</div>
-          <div><strong>Tools:</strong> 9</div>
-          <div><strong>Regions:</strong> 7</div>
-          <div><strong>Sectors:</strong> 15</div>
+          <div><strong>Version:</strong> 1.2.0</div>
+          <div><strong>Tools:</strong> 10</div>
+          <div><strong>Areas:</strong> 7 regions, 4 income groups, 90 countries</div>
+          <div><strong>Sectors:</strong> 21 (IFC + GICS)</div>
           <div><strong>Data Sources:</strong> 3 (Sovereign, Public, Private)</div>
-          <div><strong>Coverage:</strong> 6 of 11 indicators (54.5%)</div>
         </div>
 
-        <h3 style={{ fontSize: '1rem', color: '#0066cc', marginTop: '1rem', marginBottom: '0.5rem' }}>What's New in v2.0</h3>
+        <h3 style={{ fontSize: '1rem', color: '#0066cc', marginTop: '1rem', marginBottom: '0.5rem' }}>What's New in 1.2.0</h3>
         <ul style={{ margin: 0, lineHeight: '1.6', fontSize: '0.9rem' }}>
-          <li>Three economic sectors (sovereign, public, private)</li>
-          <li>Enhanced tool coverage (5 → 9 tools)</li>
-          <li>Smart data source detection</li>
-          <li>Time series analysis</li>
-          <li>Seniority analysis</li>
-          <li>Multidimensional queries</li>
+          <li>Live Data360 data restored for every tool</li>
+          <li>Country profiles and country / income-group rankings</li>
+          <li>90% confidence intervals for default rates</li>
+          <li>No synthetic fallback numbers; unpublished breakdowns are reported as such</li>
+          <li>Recovery-rate history and all published seniority levels</li>
         </ul>
       </section>
 

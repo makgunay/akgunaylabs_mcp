@@ -99,7 +99,7 @@ export default function Home() {
                       fontSize: '0.85rem',
                       color: '#666'
                     }}>
-                      9 tools
+                      10 tools
                     </span>
                     <span style={{
                       padding: '0.25rem 0.75rem',
@@ -119,7 +119,7 @@ export default function Home() {
                       fontSize: '0.85rem',
                       color: '#666'
                     }}>
-                      40+ years of data
+                      Data from 1984–2025
                     </span>
                   </div>
                   <div style={{
