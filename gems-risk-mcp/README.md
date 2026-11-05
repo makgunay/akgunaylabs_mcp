@@ -213,7 +213,7 @@ All tools accept an optional `data_source` parameter:
 
 Figures are the global averages from the 2025 GEMs publication on Data360.
 
-**Default:** If not specified, queries use `"public"` sector data for backward compatibility.
+**Default:** If not specified, queries use `"public"` sector data for backward compatibility. Exception: `get_country_risk` defaults to `"private"`, the only source with broad country coverage.
 
 ---
 
@@ -231,7 +231,7 @@ Figures are the global averages from the 2025 GEMs publication on Data360.
 
 - **Snapshot vs. history:** `IFC_GEM_SD/PBD/PRD` (defaults) and `IFC_GEM_SR/PBR/PRR` (recoveries) hold one `TIME_PERIOD` — the publication vintage — with period averages. Annual values come from the `_H` indicators. The server always reads the latest vintage present, so a new publication is picked up without code changes.
 - **Global aggregate:** `REF_AREA=WLD`.
-- **Hidden breakdowns:** some snapshot rows are split by dimensions the Data360 API neither returns nor filters (e.g. credit enhancement), so one query can match several values. Default rates resolve exactly: the headline equals defaults ÷ observations of the full sample. Recovery rates use the period average reconstructed from the annual series (exact for global totals), else the value at published precision, else the first listed. Every response lists the values Data360 returned.
+- **Hidden breakdowns:** some snapshot rows are split by dimensions the Data360 API neither returns nor filters (e.g. credit enhancement), so one query can match several values. Default rates resolve exactly: the headline equals defaults ÷ observations of the full sample. Recovery rates use the period average reconstructed from the annual series (exact for global totals), else the value at published precision, else the first listed. Single-value responses list every value Data360 returned; ranking and breakdown tables mark ambiguous rates with † (resolved) or ‡ (uncertain).
 - **Confidence intervals:** Data360 publishes some regional sector intervals with lower and upper bounds swapped; the server orders them.
 - **Reliability:** responses are cached for an hour per instance; timeouts, network errors and 5xx responses are retried once; if a refresh fails, the last good response is served.
 
@@ -421,7 +421,7 @@ You don't need to know the technical parameters:
 - Try region `global` or `data_source: "private"`, which has the widest coverage
 
 ### "Data360 request failed" errors
-- The World Bank Data360 API was unreachable, slow, or rate limited even after one automatic retry, and no earlier response was cached; retry in a few minutes
+- The World Bank Data360 API was unreachable, slow (timeouts, network errors and 5xx are retried once automatically), or rate limited (HTTP 429 is not retried), and no earlier response was cached; retry in a few minutes
 
 ### Connection issues
 - Verify your internet connection
