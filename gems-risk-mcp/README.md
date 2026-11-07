@@ -369,8 +369,8 @@ Analyze public sector lending in Sub-Saharan Africa
 ### Combine Tools for Rich Analysis
 Claude can chain multiple tools together:
 ```
-Compare infrastructure vs manufacturing credit risk across all regions,
-then show me the 5-year trend for the riskiest combination
+Rank regions by private sector default rate,
+then show me the 5-year default trend for the riskiest region
 ```
 
 ### Use Natural Language

@@ -108,7 +108,7 @@ export default function GemsRiskPage() {
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>5. get_sector_analysis</strong>
             <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Analyze credit performance by economic sector</p>
-            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Default rate for infrastructure in East Asia?"</code>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Private sector default rate for infrastructure lending?"</code>
           </div>
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
