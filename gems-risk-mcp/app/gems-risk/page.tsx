@@ -114,7 +114,7 @@ export default function GemsRiskPage() {
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>6. get_project_type_analysis</strong>
             <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Compare credit risk across project types</p>
-            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Compare greenfield vs expansion projects"</code>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Compare project finance vs corporate finance"</code>
           </div>
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
@@ -160,14 +160,14 @@ export default function GemsRiskPage() {
           </div>
 
           <div>
-            <h3 style={{ fontSize: '1rem', color: '#0066cc', marginBottom: '0.5rem' }}>Economic Sectors (15)</h3>
+            <h3 style={{ fontSize: '1rem', color: '#0066cc', marginBottom: '0.5rem' }}>Sectors (22)</h3>
             <ul style={{ margin: 0, paddingLeft: '1.5rem', fontSize: '0.9rem' }}>
+              <li>Banking</li>
               <li>Infrastructure</li>
-              <li>Manufacturing</li>
-              <li>Financial Institutions</li>
-              <li>Oil & Gas</li>
-              <li>Agriculture</li>
-              <li>+ 10 more sectors</li>
+              <li>Renewables</li>
+              <li>GICS: Energy</li>
+              <li>GICS: Utilities</li>
+              <li>+ 17 more (IFC categories, GICS sectors, mixed)</li>
             </ul>
           </div>
 
