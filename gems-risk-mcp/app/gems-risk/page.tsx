@@ -31,7 +31,7 @@ export default function GemsRiskPage() {
           <li><strong>Private Sector</strong> - Corporate and private sector lending (largest sample)</li>
         </ul>
         <p>
-          Analyze <strong>7 global regions</strong>, <strong>21 sector categories</strong> (IFC + GICS), project types, debt seniority, and annual history back to 1984 (sovereign) / 1994 (public and private).
+          Analyze <strong>7 global regions</strong>, <strong>22 sector categories</strong> (IFC + GICS + mixed), project types, debt seniority, and annual history back to 1984 (sovereign) / 1994 (public and private).
         </p>
       </section>
 
@@ -154,7 +154,7 @@ export default function GemsRiskPage() {
               <li>Latin America & Caribbean</li>
               <li>Sub-Saharan Africa</li>
               <li>South Asia</li>
-              <li>Middle East & North Africa</li>
+              <li>Middle East, North Africa, Afghanistan & Pakistan</li>
               <li>Europe & Central Asia</li>
             </ul>
           </div>
@@ -251,9 +251,9 @@ export default function GemsRiskPage() {
             <li>"What's the default rate in Latin America?"</li>
             <li>"Compare sovereign vs corporate default risk in Sub-Saharan Africa"</li>
             <li>"Show me the 10-year default rate trend for global emerging markets"</li>
-            <li>"What's the recovery rate for senior infrastructure debt in MENA?"</li>
+            <li>"What's the recovery rate for senior secured private sector debt?"</li>
             <li>"Which region has the highest recovery rates for private sector lending?"</li>
-            <li>"Compare greenfield vs expansion projects for credit risk"</li>
+            <li>"Compare project finance vs corporate finance for credit risk"</li>
           </ul>
         </div>
       </section>
@@ -264,7 +264,7 @@ export default function GemsRiskPage() {
           <div><strong>Version:</strong> 1.2.0</div>
           <div><strong>Tools:</strong> 10</div>
           <div><strong>Areas:</strong> 7 regions, 4 income groups, 90 countries</div>
-          <div><strong>Sectors:</strong> 21 (IFC + GICS)</div>
+          <div><strong>Sectors:</strong> 22 (IFC + GICS + mixed)</div>
           <div><strong>Data Sources:</strong> 3 (Sovereign, Public, Private)</div>
         </div>
 
