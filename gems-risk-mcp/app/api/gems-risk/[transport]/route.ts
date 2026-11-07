@@ -524,7 +524,10 @@ const handler = createMcpHandler(
       'query_multidimensional',
       {
         title: 'Multi-dimensional credit risk query',
-        description: `Default and recovery rates for a region + sector + project type combination. Most combinations beyond one filter are not published. ${SOURCE_DESCRIPTION}`,
+        description:
+          'Default and recovery rates for a region + sector + project type combination. For private data, sectors ' +
+          '(IFC categories and GICS) are published per region; public sector breakdowns and project types only globally. ' +
+          `Combinations of sector and project type are not published. ${SOURCE_DESCRIPTION}`,
         inputSchema: {
           region: regionParam.optional().describe('Region filter (default: global)'),
           sector: z.enum(SECTOR_KEYS).optional().describe('Sector filter (default: all sectors)'),

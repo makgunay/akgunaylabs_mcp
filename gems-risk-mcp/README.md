@@ -198,7 +198,7 @@ High, upper-middle, lower-middle and low income (World Bank classification).
 90 countries for private sector lending (default rates, with recoveries for 55), 14 for public sector lending.
 
 ### Sectors (22 categories)
-IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services, Mixed. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Sector breakdowns are published at the global level. Labels follow the Data360 dimensions API (`POST /data360/portal/v1/dimensions`).
+IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services, Mixed. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Private lending sectors are also published per region and for many countries — use `query_multidimensional` (e.g. infrastructure in Latin America) or `get_country_risk`; public sector data is global only, and sovereign data has no sector split. Labels follow the Data360 dimensions API (`POST /data360/portal/v1/dimensions`).
 
 ### Project Types
 Corporate Finance, Project Finance, Financial Institutions, Structured Finance, Real Estate Finance (private), Other (public recovery only).
