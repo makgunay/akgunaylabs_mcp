@@ -1,5 +1,6 @@
 // Code lists for the IFC GEMs database (DATABASE_ID=IFC_GEM) on World Bank Data360.
-// Codes verified against the live data API; labels follow the GEMs publication.
+// Codes verified against the live data API; labels match the Data360 dimensions API
+// (POST https://data360api.worldbank.org/data360/portal/v1/dimensions, 2025 vintage).
 
 export const DATABASE_ID = 'IFC_GEM';
 
@@ -77,7 +78,7 @@ export const AREA_NAMES: Record<string, string> = {
   EAS: 'East Asia & Pacific',
   ECS: 'Europe & Central Asia',
   LCN: 'Latin America & Caribbean',
-  MEA: 'Middle East & North Africa',
+  MEA: 'Middle East, North Africa, Afghanistan & Pakistan',
   SAS: 'South Asia',
   SSF: 'Sub-Saharan Africa',
   HIC: 'High income',
@@ -86,12 +87,12 @@ export const AREA_NAMES: Record<string, string> = {
   LIC: 'Low income',
 };
 
-// Countries with GEMs statistics on Data360 (2025 vintage), named as in the World Bank REF_AREA codelist.
+// Countries with GEMs statistics on Data360 (2025 vintage), named as in the IFC_GEM REF_AREA dimension.
 // Country data is published for private sector (90 countries) and public sector (14); none for sovereign.
 export const COUNTRY_NAMES: Record<string, string> = {
   ALB: 'Albania', ARG: 'Argentina', ARM: 'Armenia', AZE: 'Azerbaijan', BEN: 'Benin', BFA: 'Burkina Faso',
   BGD: 'Bangladesh', BGR: 'Bulgaria', BIH: 'Bosnia and Herzegovina', BLR: 'Belarus', BOL: 'Bolivia',
-  BRA: 'Brazil', CHL: 'Chile', CHN: 'China', CIV: "Cote d'Ivoire", CMR: 'Cameroon', COD: 'Congo, Dem. Rep.',
+  BRA: 'Brazil', CHL: 'Chile', CHN: 'China', CIV: 'Côte d’Ivoire', CMR: 'Cameroon', COD: 'Congo, Dem. Rep.',
   COL: 'Colombia', CRI: 'Costa Rica', CZE: 'Czechia', DOM: 'Dominican Republic', ECU: 'Ecuador',
   EGY: 'Egypt, Arab Rep.', GAB: 'Gabon', GEO: 'Georgia', GHA: 'Ghana', GIN: 'Guinea', GTM: 'Guatemala',
   HND: 'Honduras', HRV: 'Croatia', HTI: 'Haiti', HUN: 'Hungary', IDN: 'Indonesia', IND: 'India',
@@ -102,14 +103,14 @@ export const COUNTRY_NAMES: Record<string, string> = {
   PAN: 'Panama', PER: 'Peru', PHL: 'Philippines', POL: 'Poland', PRY: 'Paraguay', PSE: 'West Bank and Gaza',
   ROU: 'Romania', RUS: 'Russian Federation', RWA: 'Rwanda', SEN: 'Senegal', SLV: 'El Salvador', SRB: 'Serbia',
   SVK: 'Slovak Republic', SVN: 'Slovenia', TGO: 'Togo', THA: 'Thailand', TJK: 'Tajikistan', TKM: 'Turkmenistan',
-  TTO: 'Trinidad and Tobago', TUN: 'Tunisia', TUR: 'Turkiye', TZA: 'Tanzania', UGA: 'Uganda', UKR: 'Ukraine',
-  URY: 'Uruguay', UZB: 'Uzbekistan', VEN: 'Venezuela, RB', VNM: 'Viet Nam', XKX: 'Kosovo', ZAF: 'South Africa',
+  TTO: 'Trinidad and Tobago', TUN: 'Tunisia', TUR: 'Türkiye', TZA: 'Tanzania', UGA: 'Uganda', UKR: 'Ukraine',
+  URY: 'Uruguay', UZB: 'Uzbekistan', VEN: 'Venezuela, RB', VNM: 'Vietnam', XKX: 'Kosovo', ZAF: 'South Africa',
   ZMB: 'Zambia', ZWE: 'Zimbabwe',
 };
 
 // Common names that are not substrings of the codelist names.
 const COUNTRY_ALIASES: Record<string, string> = {
-  'turkey': 'TUR', 'turkiye': 'TUR', 'ivory coast': 'CIV', 'russia': 'RUS', 'vietnam': 'VNM',
+  'turkey': 'TUR', 'ivory coast': 'CIV', 'russia': 'RUS', 'viet nam': 'VNM',
   'drc': 'COD', 'dr congo': 'COD', 'democratic republic of the congo': 'COD', 'kyrgyzstan': 'KGZ',
   'palestine': 'PSE', 'slovakia': 'SVK', 'czech republic': 'CZE', 'macedonia': 'MKD', 'burma': 'MMR',
 };
@@ -167,6 +168,7 @@ export const SECTORS = {
   'real-estate': 'RE',
   'information-technology': 'IT',
   'administration': 'A',
+  'mixed': 'MXS',
 } as const;
 export type Sector = keyof typeof SECTORS;
 export const SECTOR_KEYS = Object.keys(SECTORS) as [Sector, ...Sector[]];
@@ -174,7 +176,7 @@ export const SECTOR_KEYS = Object.keys(SECTORS) as [Sector, ...Sector[]];
 export const SECTOR_NAMES: Record<string, string> = {
   _T: 'All sectors',
   NF: 'Non-financial institutions',
-  FI: 'Financial institutions',
+  FI: 'Financial Institutions',
   BK: 'Banking',
   IN: 'Infrastructure',
   NB: 'Non-banking financial institutions',
@@ -183,16 +185,17 @@ export const SECTOR_NAMES: Record<string, string> = {
   F: 'GICS: Financials',
   U: 'GICS: Utilities',
   I: 'GICS: Industrials',
-  CST: 'GICS: Consumer Staples',
-  CD: 'GICS: Consumer Discretionary',
+  CST: 'GICS: Consumer staples',
+  CD: 'GICS: Consumer discretionary',
   M: 'GICS: Materials',
   O: 'GICS: Others',
-  CS: 'GICS: Communication Services',
+  CS: 'GICS: Communication services',
   HC: 'GICS: Health Care',
   E: 'GICS: Energy',
   RE: 'GICS: Real Estate',
-  IT: 'GICS: Information Technology',
+  IT: 'GICS: Information technology',
   A: 'GICS: Administration',
+  MXS: 'Mixed',
 };
 
 export const PROJECT_TYPES = {
@@ -214,15 +217,15 @@ export const PROJECT_TYPE_NAMES: Record<string, string> = {
   PF: 'Project Finance',
   FI: 'Financial Institutions',
   SF: 'Structured Finance',
-  RE: 'Real Estate',
+  RE: 'Real Estate Finance',
   O: 'Other',
 };
 
 export const SENIORITY_NAMES: Record<string, string> = {
   _T: 'All seniority levels',
-  SS: 'Senior Secured',
-  SU: 'Senior Unsecured',
+  SS: 'Senior-Secured',
+  SU: 'Senior-Unsecured',
   S: 'Senior',
   SUB: 'Subordinated',
-  NAV: 'Not available',
+  NAV: 'Not Available',
 };

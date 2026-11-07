@@ -14,7 +14,7 @@ This MCP server enables AI assistants (like Claude) to query credit risk data fo
 - **Public Sector** - Sub-sovereign entities and state-owned enterprises (SOEs)
 - **Private Sector** - Corporate and private sector lending (largest dataset)
 
-You can analyze default rates, recovery rates, expected losses, and historical trends across 7 regions, 21 sector categories (IFC + GICS), 6 project types, and debt seniority, with annual history back to 1984 (sovereign) and 1994 (public and private).
+You can analyze default rates, recovery rates, expected losses, and historical trends across 7 regions, 22 sector categories (IFC + GICS + mixed), 6 project types, and debt seniority, with annual history back to 1984 (sovereign) and 1994 (public and private).
 
 ---
 
@@ -139,7 +139,7 @@ What's the private sector default rate for infrastructure lending?
 ```
 
 ### 6. `get_project_type_analysis`
-Compare credit risk across financing types (corporate finance, project finance, financial institutions, structured finance, real estate)
+Compare credit risk across financing types (corporate finance, project finance, financial institutions, structured finance, real estate finance)
 
 **Example:**
 ```
@@ -188,7 +188,7 @@ What's the credit risk of lending to Kenyan companies?
 - **Latin America & Caribbean** (LAC)
 - **Sub-Saharan Africa** (SSA)
 - **South Asia** (SAR)
-- **Middle East & North Africa** (MENA)
+- **Middle East, North Africa, Afghanistan & Pakistan** (`mena`; World Bank region `MEA`, which includes Afghanistan and Pakistan)
 - **Europe & Central Asia** (ECA)
 
 ### Income Groups
@@ -197,11 +197,11 @@ High, upper-middle, lower-middle and low income (World Bank classification).
 ### Countries
 90 countries for private sector lending (default rates, with recoveries for 55), 14 for public sector lending.
 
-### Sectors (21 categories)
-IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Sector breakdowns are published at the global level.
+### Sectors (22 categories)
+IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services, Mixed. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Sector breakdowns are published at the global level. Labels follow the Data360 dimensions API (`POST /data360/portal/v1/dimensions`).
 
 ### Project Types
-Corporate Finance, Project Finance, Financial Institutions, Structured Finance, Real Estate (private), Other (public recovery only).
+Corporate Finance, Project Finance, Financial Institutions, Structured Finance, Real Estate Finance (private), Other (public recovery only).
 
 ### Data Sources (3 Economic Sectors)
 
@@ -369,8 +369,8 @@ Analyze public sector lending in Sub-Saharan Africa
 ### Combine Tools for Rich Analysis
 Claude can chain multiple tools together:
 ```
-Compare infrastructure vs manufacturing credit risk across all regions,
-then show me the 5-year trend for the riskiest combination
+Rank regions by private sector default rate,
+then show me the 5-year default trend for the riskiest region
 ```
 
 ### Use Natural Language

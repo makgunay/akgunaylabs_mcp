@@ -139,6 +139,9 @@ test('confidence intervals published with swapped bounds are reported in order',
 test('country names resolve to ISO3 codes without matching word prefixes', () => {
   assert.deepEqual(resolveCountry('ken'), { code: 'KEN' });
   assert.deepEqual(resolveCountry('Côte d’Ivoire'), { code: 'CIV' });
+  assert.deepEqual(resolveCountry("Cote d'Ivoire"), { code: 'CIV' });
+  assert.deepEqual(resolveCountry('Turkiye'), { code: 'TUR' });
+  assert.deepEqual(resolveCountry('Viet Nam'), { code: 'VNM' });
   assert.deepEqual(resolveCountry('Egypt'), { code: 'EGY' });
   assert.deepEqual(resolveCountry('Bosnia'), { code: 'BIH' });
   assert.deepEqual(resolveCountry('Turkey'), { code: 'TUR' });
