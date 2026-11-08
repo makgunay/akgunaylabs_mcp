@@ -17,7 +17,8 @@ export const RecordSchema = z.object({
   code: z.string(),
   label: z.string(),
   default_rate: SelectionSchema.optional(),
-  default_rate_ci90_pct: z.tuple([z.number(), z.number()]).optional(),
+  /** [lower, upper]. Fixed-length array, not a tuple: tuple JSON Schema (`items: false`) is not portable across MCP clients. */
+  default_rate_ci90_pct: z.array(z.number()).length(2).optional(),
   recovery_rate: SelectionSchema.optional(),
   recovery_distribution_pct: z
     .object({ p10: z.number(), p25: z.number(), median: z.number(), p75: z.number(), p90: z.number() })
