@@ -213,7 +213,9 @@ All tools accept an optional `data_source` parameter:
 
 Figures are the global averages from the 2025 GEMs publication on Data360.
 
-**Default:** If not specified, queries use "private" sector data, the largest sample and the only one published by region × sector and by country.
+**Default:** If not specified, queries use "private" sector data: the largest sample, the only source published by region × sector, and the broadest country coverage (90 countries vs. 14 for public).
+
+**Migration note:** the default used to be "public". Clients that omit `data_source` now receive private sector figures; set `data_source: "public"` explicitly to keep the previous behavior.
 
 ---
 
