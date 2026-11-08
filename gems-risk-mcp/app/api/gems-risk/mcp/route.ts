@@ -20,13 +20,35 @@ import {
   type DataSource,
 } from '@/lib/gems-risk/catalog';
 import { Data360Error } from '@/lib/gems-risk/data360';
-import { GLOBAL_TOTAL, getHistory, getRates, type RateStat, type Selection, type Slice } from '@/lib/gems-risk/stats';
+import {
+  expectedLoss,
+  newOutput,
+  rateRecord,
+  ToolOutputSchema,
+  type OutputRecord,
+  type ToolOutput,
+} from '@/lib/gems-risk/output';
+import {
+  GLOBAL_TOTAL,
+  getHistory,
+  getRates,
+  type History,
+  type RateStat,
+  type Selection,
+  type Slice,
+} from '@/lib/gems-risk/stats';
 import pkg from '@/package.json';
 
 // Vercel function limit; Data360 calls are cached, but a cold call may chain several requests.
 export const maxDuration = 60;
 
-type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+type ToolResult = { content: { type: 'text'; text: string }[]; structuredContent: ToolOutput; isError?: boolean };
+
+/** Markdown answer plus the same figures as structured output. */
+interface ToolAnswer {
+  text: string;
+  data: ToolOutput;
+}
 
 const SOURCE_DESCRIPTION =
   'Data sources: "sovereign" (sovereign and sovereign-guaranteed debt), "public" (sub-sovereign public sector), ' +
@@ -38,18 +60,22 @@ const READ_ONLY = { readOnlyHint: true, openWorldHint: true } as const;
 
 const pct = (value: number) => `${value.toFixed(2)}%`;
 
-function text(body: string, isError = false): ToolResult {
-  return isError ? { content: [{ type: 'text', text: body }], isError } : { content: [{ type: 'text', text: body }] };
-}
-
-/** Run a tool body, turning Data360 failures into readable tool errors. */
-async function guarded(run: () => Promise<string>): Promise<ToolResult> {
+/**
+ * Run a tool body, turning Data360 failures into readable tool errors. `out` is the tool's output under
+ * construction, so an error still reports the filters and any notes gathered before the failure.
+ */
+async function guarded(out: ToolOutput, run: () => Promise<ToolAnswer>): Promise<ToolResult> {
   try {
-    return text(await run());
+    const { text, data } = await run();
+    return { content: [{ type: 'text', text }], structuredContent: data };
   } catch (error) {
     if (error instanceof Data360Error) {
       console.error(`Data360 ${error.kind}: ${error.message}`);
-      return text(`⚠️ **World Bank Data360 request failed** (${error.kind})\n\n${error.message}`, true);
+      return {
+        content: [{ type: 'text', text: `⚠️ **World Bank Data360 request failed** (${error.kind})\n\n${error.message}` }],
+        structuredContent: { ...out, status: 'error', notes: [...out.notes, `Data360 ${error.kind}: ${error.message}`] },
+        isError: true,
+      };
     }
     throw error;
   }
@@ -59,14 +85,17 @@ function period(source: DataSource, vintage: string): string {
   return `${DATA_SOURCE_INFO[source].coverageStart}–${vintage}`;
 }
 
-function attribution(source: DataSource, vintage: string, indicators: string[]): string {
+const STALE_NOTE = 'This is the latest GEMs publication on Data360; it may predate the current GEMs report.';
+
+/** Source line for `out.indicators`; records the vintage (and staleness) in `out`. */
+function attribution(source: DataSource, vintage: string, out: ToolOutput): string {
   const info = DATA_SOURCE_INFO[source];
-  const stale = Number(vintage) < new Date().getFullYear() - 1
-    ? ` ⚠️ This is the latest GEMs publication on Data360; it may predate the current GEMs report.`
-    : '';
+  out.vintage = vintage;
+  const isStale = Number(vintage) < new Date().getFullYear() - 1;
+  if (isStale) out.notes.push(STALE_NOTE);
   return (
-    `*Source: World Bank Data360, IFC GEMs (${indicators.join(', ')}), ${info.label} — ${info.description}. ` +
-    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${stale}*`
+    `*Source: World Bank Data360, IFC GEMs (${out.indicators.join(', ')}), ${info.label} — ${info.description}. ` +
+    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${isStale ? ` ⚠️ ${STALE_NOTE}` : ''}*`
   );
 }
 
@@ -99,18 +128,19 @@ const SELECTION_METHOD_TEXT: Record<Selection['method'], string> = {
   'first-listed': 'first value listed by Data360 — treat as uncertain',
 };
 
-/** Disclose when Data360 returned several values for one breakdown; empty when unambiguous. */
-function ambiguityNote(label: string, rate: Selection): string {
+/** Disclose when Data360 returned several values for one breakdown (also in `notes`); empty when unambiguous. */
+function ambiguityNote(label: string, rate: Selection, notes: string[]): string {
   if (rate.candidates.length < 2) return '';
+  const list = rate.candidates.map(pct).join(', ');
+  notes.push(
+    `${label}: Data360 returned ${rate.candidates.length} values (${list}) that differ by a dimension the API does not expose; ` +
+      `showing ${pct(rate.value)} (${SELECTION_METHOD_TEXT[rate.method]}).`,
+  );
   return (
     `\n⚠️ ${label}: Data360 returned ${rate.candidates.length} values for this breakdown ` +
-    `(${rate.candidates.map(pct).join(', ')}) that differ by a dimension the Data360 API does not expose. ` +
+    `(${list}) that differ by a dimension the Data360 API does not expose. ` +
     `Showing ${pct(rate.value)}: ${SELECTION_METHOD_TEXT[rate.method]}.\n`
   );
-}
-
-function expectedLoss(defaultRate: number, recoveryRate: number): number {
-  return (defaultRate * (100 - recoveryRate)) / 100;
 }
 
 /** Sample size line; recovery tables carry only defaults and signed amount. */
@@ -150,21 +180,24 @@ function markerLegend(rates: Selection[]): string {
   return out;
 }
 
-function noData(what: string, filters: string[]): string {
-  return (
-    `ℹ️ **No ${what} published in Data360 for:**\n\n${filters.map((f) => `- ${f}`).join('\n')}\n\n` +
-    'IFC GEMs publishes sector, project-type and seniority breakdowns mainly at the global level, ' +
-    'and sovereign/public statistics for fewer breakdowns than private. Try region "global" or data_source "private".'
-  );
+function noData(what: string, filters: string[], out: ToolOutput): ToolAnswer {
+  return {
+    text:
+      `ℹ️ **No ${what} published in Data360 for:**\n\n${filters.map((f) => `- ${f}`).join('\n')}\n\n` +
+      'IFC GEMs publishes sector, project-type and seniority breakdowns mainly at the global level, ' +
+      'and sovereign/public statistics for fewer breakdowns than private. Try region "global" or data_source "private".',
+    data: { ...out, status: 'no_data' },
+  };
 }
 
 async function single(source: DataSource, kind: 'default' | 'recovery', slice: Slice): Promise<RateStat | undefined> {
   return (await getRates(source, kind, slice)).get(slice.REF_AREA);
 }
 
-/** Compare a default rate with the global average of the same data source. */
-function benchmarkLine(source: DataSource, defaultRate: number, global: RateStat | undefined): string {
+/** Compare a default rate with the global average of the same data source (recorded in `out`). */
+function benchmarkLine(source: DataSource, defaultRate: number, global: RateStat | undefined, out: ToolOutput): string {
   if (!global) return '';
+  out.global_default_rate_pct = global.rate.value;
   const diff = defaultRate - global.rate.value;
   const relation = Math.abs(diff) < 0.005 ? 'in line with' : diff < 0 ? 'below' : 'above';
   return (
@@ -173,7 +206,19 @@ function benchmarkLine(source: DataSource, defaultRate: number, global: RateStat
   );
 }
 
+/** Annual history point as a TIME_PERIOD record; several values for a year mean the first listed is shown. */
+function historyRecord(kind: 'default' | 'recovery', point: History['points'][number]): OutputRecord {
+  const rate = {
+    value_pct: point.rate,
+    candidates_pct: point.candidates,
+    method: point.candidates.length > 1 ? ('first-listed' as const) : ('unique' as const),
+  };
+  const year = String(point.year);
+  return { dimension: 'TIME_PERIOD', code: year, label: year, ...(kind === 'default' ? { default_rate: rate } : { recovery_rate: rate }) };
+}
+
 interface BreakdownRow {
+  code: string;
   name: string;
   defaultStat?: RateStat;
   recoveryStat?: RateStat;
@@ -191,6 +236,10 @@ function breakdownTable(label: string, rows: BreakdownRow[]): string {
   return `${out}\n${markerLegend(rates)}n/a = not published for this breakdown.\n`;
 }
 
+function breakdownRecords(dimension: OutputRecord['dimension'], rows: BreakdownRow[]): OutputRecord[] {
+  return rows.map((r) => rateRecord(dimension, r.code, r.name, r.defaultStat, r.recoveryStat));
+}
+
 /** Default and recovery stats for every value of one dimension; rows sorted by default rate. */
 async function breakdown(
   source: DataSource,
@@ -205,7 +254,7 @@ async function breakdown(
   // Codes without a known label (e.g. SECTOR=MXS) are listed by code rather than dropped.
   const codes = [...new Set([...defaults.keys(), ...recoveries.keys()])].filter((c) => c !== '_T');
   const rows = codes
-    .map((code) => ({ name: names[code] ?? code, defaultStat: defaults.get(code), recoveryStat: recoveries.get(code) }))
+    .map((code) => ({ code, name: names[code] ?? code, defaultStat: defaults.get(code), recoveryStat: recoveries.get(code) }))
     .sort((a, b) => (a.defaultStat?.rate.value ?? Infinity) - (b.defaultStat?.rate.value ?? Infinity));
   const vintage = [...defaults.values(), ...recoveries.values()][0]?.vintage;
   return { rows, vintage, defaults, recoveries };
@@ -219,22 +268,26 @@ const handler = createMcpHandler(
         title: 'Default rates by region',
         description: `Average annual default rate for emerging-market lending in a region, with sample size. ${SOURCE_DESCRIPTION}`,
         inputSchema: z.object({ region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region, data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ region, data_source: source = 'private' }) => {
+        const out = newOutput(source, { region, data_source: source }, [DATA_SOURCE_INFO[source].defaultIndicator]);
+        return guarded(out, async () => {
           const code = AREAS[region];
           const stat = await single(source, 'default', { ...GLOBAL_TOTAL, REF_AREA: code });
-          if (!stat) return noData('default rate', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
-          return (
+          if (!stat) return noData('default rate', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
+          out.records.push(rateRecord('REF_AREA', code, AREA_NAMES[code], stat));
+          const text =
             `# Default Rates: ${AREA_NAMES[code]}\n\n` +
             `**Average annual default rate:** ${defaultRateText(stat)}\n` +
             `**Period:** ${period(source, stat.vintage)}\n` +
             sampleLine(stat) +
-            ambiguityNote('Default rate', stat.rate) +
-            `\n${attribution(source, stat.vintage, [DATA_SOURCE_INFO[source].defaultIndicator])}`
-          );
-        }),
+            ambiguityNote('Default rate', stat.rate, out.notes) +
+            `\n${attribution(source, stat.vintage, out)}`;
+          return { text, data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -243,24 +296,28 @@ const handler = createMcpHandler(
         title: 'Recovery rates by region',
         description: `Average recovery rate on defaulted exposures in a region. ${SOURCE_DESCRIPTION}`,
         inputSchema: z.object({ region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region, data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ region, data_source: source = 'private' }) => {
+        const out = newOutput(source, { region, data_source: source }, [DATA_SOURCE_INFO[source].recoveryIndicator]);
+        return guarded(out, async () => {
           const code = AREAS[region];
           const stat = await single(source, 'recovery', { ...GLOBAL_TOTAL, REF_AREA: code });
-          if (!stat) return noData('recovery rate', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
-          return (
+          if (!stat) return noData('recovery rate', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
+          out.records.push(rateRecord('REF_AREA', code, AREA_NAMES[code], undefined, stat));
+          const text =
             `# Recovery Rates: ${AREA_NAMES[code]}\n\n` +
             `**Average recovery rate:** ${pct(stat.rate.value)}\n` +
             `**Period:** ${period(source, stat.vintage)}\n` +
             sampleLine(stat) +
-            ambiguityNote('Recovery rate', stat.rate) +
+            ambiguityNote('Recovery rate', stat.rate, out.notes) +
             `\nWhen loans default, lenders recover on average ${pct(stat.rate.value)} of the exposure ` +
             '(discounted post-default cash flows over the outstanding amount).\n\n' +
-            attribution(source, stat.vintage, [DATA_SOURCE_INFO[source].recoveryIndicator])
-          );
-        }),
+            attribution(source, stat.vintage, out);
+          return { text, data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -269,31 +326,35 @@ const handler = createMcpHandler(
         title: 'Credit risk profile',
         description: `Credit risk profile for a region: default rate, recovery rate, expected loss and sample size. ${SOURCE_DESCRIPTION}`,
         inputSchema: z.object({ region: regionParam.describe('Region or income group to analyze'), data_source: dataSourceParam }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region, data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ region, data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const out = newOutput(source, { region, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
+        return guarded(out, async () => {
           const code = AREAS[region];
           const slice = { ...GLOBAL_TOTAL, REF_AREA: code };
           const [dr, rr] = await Promise.all([single(source, 'default', slice), single(source, 'recovery', slice)]);
-          if (!dr && !rr) return noData('credit risk data', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
+          if (!dr && !rr) return noData('credit risk data', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
+          out.records.push(rateRecord('REF_AREA', code, AREA_NAMES[code], dr, rr));
           const vintage = (dr ?? rr)!.vintage;
-          let out = `# Credit Risk Profile: ${AREA_NAMES[code]}\n\n## Key Metrics\n\n`;
-          out += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
-          out += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
-          out += `**Period:** ${period(source, vintage)}\n`;
-          out += sampleLines(dr, rr);
-          if (dr) out += ambiguityNote('Default rate', dr.rate);
-          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
-          out += '\n## Risk Assessment\n\n';
-          out +=
+          let text = `# Credit Risk Profile: ${AREA_NAMES[code]}\n\n## Key Metrics\n\n`;
+          text += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
+          text += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          text += `**Period:** ${period(source, vintage)}\n`;
+          text += sampleLines(dr, rr);
+          if (dr) text += ambiguityNote('Default rate', dr.rate, out.notes);
+          if (rr) text += ambiguityNote('Recovery rate', rr.rate, out.notes);
+          text += '\n## Risk Assessment\n\n';
+          text +=
             dr && rr
               ? `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))} per year ` +
                 '(default rate × (1 − recovery rate)).\n\n'
               : 'Expected loss not computed: both default and recovery rates are required.\n\n';
-          const info = DATA_SOURCE_INFO[source];
-          return out + attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator]);
-        }),
+          return { text: text + attribution(source, vintage, out), data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -305,20 +366,23 @@ const handler = createMcpHandler(
           sector: z.enum(SECTOR_KEYS).optional().describe('Sector to analyze, or "all" (default) for a comparison table'),
           data_source: dataSourceParam,
         }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ sector = 'all', data_source: source = 'private' }) =>
-        guarded(async () => {
-          const info = DATA_SOURCE_INFO[source];
+      ({ sector = 'all', data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const out = newOutput(source, { sector, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
+        return guarded(out, async () => {
           const code = SECTORS[sector];
           if (code === '_T') {
             const { rows, vintage } = await breakdown(source, GLOBAL_TOTAL, 'SECTOR', SECTOR_NAMES);
-            if (!rows.length || !vintage) return noData('sector breakdown', [`Data source: ${source}`]);
-            return (
+            if (!rows.length || !vintage) return noData('sector breakdown', [`Data source: ${source}`], out);
+            out.records.push(...breakdownRecords('SECTOR', rows));
+            const text =
               `# Credit Risk by Sector (Global, ${info.label})\n\n` +
               breakdownTable('Sector', rows) +
-              `\n${attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator])}`
-            );
+              `\n${attribution(source, vintage, out)}`;
+            return { text, data: out };
           }
 
           const slice = { ...GLOBAL_TOTAL, SECTOR: code };
@@ -327,19 +391,21 @@ const handler = createMcpHandler(
             single(source, 'recovery', slice),
             single(source, 'default', GLOBAL_TOTAL),
           ]);
-          if (!dr && !rr) return noData('sector data', [`Sector: ${SECTOR_NAMES[code]}`, `Data source: ${source}`]);
-          let out = `# Sector Analysis: ${SECTOR_NAMES[code]} (Global)\n\n`;
-          out += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
-          out += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
-          if (dr && rr) out += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))}\n`;
-          out += `**Period:** ${period(source, (dr ?? rr)!.vintage)}\n`;
-          out += sampleLines(dr, rr);
-          if (dr) out += ambiguityNote('Default rate', dr.rate);
-          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
-          out += '\n';
-          if (dr) out += benchmarkLine(source, dr.rate.value, global);
-          return out + attribution(source, (dr ?? rr)!.vintage, [info.defaultIndicator, info.recoveryIndicator]);
-        }),
+          if (!dr && !rr) return noData('sector data', [`Sector: ${SECTOR_NAMES[code]}`, `Data source: ${source}`], out);
+          out.records.push(rateRecord('SECTOR', code, SECTOR_NAMES[code], dr, rr));
+          let text = `# Sector Analysis: ${SECTOR_NAMES[code]} (Global)\n\n`;
+          text += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
+          text += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          if (dr && rr) text += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))}\n`;
+          text += `**Period:** ${period(source, (dr ?? rr)!.vintage)}\n`;
+          text += sampleLines(dr, rr);
+          if (dr) text += ambiguityNote('Default rate', dr.rate, out.notes);
+          if (rr) text += ambiguityNote('Recovery rate', rr.rate, out.notes);
+          text += '\n';
+          if (dr) text += benchmarkLine(source, dr.rate.value, global, out);
+          return { text: text + attribution(source, (dr ?? rr)!.vintage, out), data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -354,41 +420,57 @@ const handler = createMcpHandler(
           grouping: z.enum(['region', 'income', 'country']).optional().describe('What to rank (default: region)'),
           data_source: dataSourceParam,
         }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ metric, grouping = 'region', data_source: source = 'private' }) =>
-        guarded(async () => {
-          const info = DATA_SOURCE_INFO[source];
+      ({ metric, grouping = 'region', data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const kinds = metric === 'both' ? (['default', 'recovery'] as const) : metric === 'default-rate' ? (['default'] as const) : (['recovery'] as const);
+        const out = newOutput(
+          source,
+          { metric, grouping, data_source: source },
+          kinds.map((k) => (k === 'default' ? info.defaultIndicator : info.recoveryIndicator)),
+        );
+        return guarded(out, async () => {
           const codes = COMPARISON_GROUPS[grouping];
           const wanted = new Set(codes);
-          const kinds = metric === 'both' ? (['default', 'recovery'] as const) : metric === 'default-rate' ? (['default'] as const) : (['recovery'] as const);
           const results = await Promise.all(kinds.map((kind) => getRates(source, kind, GLOBAL_TOTAL, 'REF_AREA')));
 
           const heading = { region: 'Regional', income: 'Income Group', country: 'Country' }[grouping];
-          let out = `# ${heading} Credit Risk Comparison (${info.label})\n\n`;
+          let text = `# ${heading} Credit Risk Comparison (${info.label})\n\n`;
           let vintage: string | undefined;
+          // Codes in the order of the first ranking printed, then any only the second ranking has.
+          const shownCodes: string[] = [];
           kinds.forEach((kind, i) => {
             const stats = [...results[i].values()].filter((s) => wanted.has(s.code));
             stats.sort((a, b) => (kind === 'default' ? a.rate.value - b.rate.value : b.rate.value - a.rate.value));
-            out += `## ${kind === 'default' ? 'Default Rates (lowest first)' : 'Recovery Rates (highest first)'}\n\n`;
+            text += `## ${kind === 'default' ? 'Default Rates (lowest first)' : 'Recovery Rates (highest first)'}\n\n`;
             stats.forEach((s, rank) => {
               const n = kind === 'default' ? s.counterparts ?? s.observations : s.defaults;
               const unit = kind === 'default' ? (s.counterparts !== undefined ? 'counterparts' : 'observations') : s.defaultsUnit;
               const sample = n !== undefined ? ` (n = ${n.toLocaleString('en-US')} ${unit})` : '';
-              out += `${rank + 1}. **${areaName(s.code)}:** ${pct(s.rate.value)}${marker(s.rate)}${sample}\n`;
+              text += `${rank + 1}. **${areaName(s.code)}:** ${pct(s.rate.value)}${marker(s.rate)}${sample}\n`;
+              if (!shownCodes.includes(s.code)) shownCodes.push(s.code);
             });
             const missing = codes.filter((c) => !results[i].has(c));
-            if (grouping === 'country') out += `\n${stats.length} of ${codes.length} GEMs countries published.\n`;
-            else if (missing.length) out += `\nNot published: ${missing.map(areaName).join(', ')}\n`;
-            out += '\n';
+            if (grouping === 'country') text += `\n${stats.length} of ${codes.length} GEMs countries published.\n`;
+            else if (missing.length) text += `\nNot published: ${missing.map(areaName).join(', ')}\n`;
+            text += '\n';
             vintage ??= stats[0]?.vintage;
           });
-          if (!vintage) return noData(`${heading.toLowerCase()} data`, [`Data source: ${source}`]);
-          if (grouping === 'country') out += 'Small samples make country rates volatile; weigh them by n.\n\n';
+          if (!vintage) return noData(`${heading.toLowerCase()} data`, [`Data source: ${source}`], out);
+          const byKind = new Map<string, Map<string, RateStat>>(kinds.map((kind, i) => [kind, results[i]]));
+          out.records.push(
+            ...shownCodes.map((code) =>
+              rateRecord('REF_AREA', code, areaName(code), byKind.get('default')?.get(code), byKind.get('recovery')?.get(code)),
+            ),
+          );
+          if (grouping === 'country') text += 'Small samples make country rates volatile; weigh them by n.\n\n';
           const shown = results.flatMap((r) => [...r.values()].filter((s) => wanted.has(s.code)).map((s) => s.rate));
-          out += markerLegend(shown) + '\n';
-          return out + attribution(source, vintage, kinds.map((k) => (k === 'default' ? info.defaultIndicator : info.recoveryIndicator)));
-        }),
+          text += markerLegend(shown) + '\n';
+          return { text: text + attribution(source, vintage, out), data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -400,27 +482,31 @@ const handler = createMcpHandler(
           projectType: z.enum(PROJECT_TYPE_KEYS).optional().describe('Project type to analyze, or "all" (default) for a comparison table'),
           data_source: dataSourceParam,
         }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ projectType = 'all', data_source: source = 'private' }) =>
-        guarded(async () => {
-          const info = DATA_SOURCE_INFO[source];
+      ({ projectType = 'all', data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const out = newOutput(source, { projectType, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
+        return guarded(out, async () => {
           const { rows, vintage } = await breakdown(source, GLOBAL_TOTAL, 'PROJECT_TYPE', PROJECT_TYPE_NAMES);
           const code = PROJECT_TYPES[projectType];
-          const selected = code === '_T' ? rows : rows.filter((r) => r.name === PROJECT_TYPE_NAMES[code]);
+          const selected = code === '_T' ? rows : rows.filter((r) => r.code === code);
           if (!selected.length || !vintage) {
-            return noData('project type data', [`Project type: ${PROJECT_TYPE_NAMES[code]}`, `Data source: ${source}`]);
+            return noData('project type data', [`Project type: ${PROJECT_TYPE_NAMES[code]}`, `Data source: ${source}`], out);
           }
-          let out = `# Credit Risk by Project Type (Global, ${info.label})\n\n` + breakdownTable('Project Type', selected);
+          out.records.push(...breakdownRecords('PROJECT_TYPE', selected));
+          let text = `# Credit Risk by Project Type (Global, ${info.label})\n\n` + breakdownTable('Project Type', selected);
           const withDefault = selected.filter((r) => r.defaultStat);
           if (withDefault.length > 1) {
             const lowest = withDefault[0];
             const highest = withDefault[withDefault.length - 1];
-            out += `\n**Lowest default rate:** ${lowest.name} (${pct(lowest.defaultStat!.rate.value)})\n`;
-            out += `**Highest default rate:** ${highest.name} (${pct(highest.defaultStat!.rate.value)})\n`;
+            text += `\n**Lowest default rate:** ${lowest.name} (${pct(lowest.defaultStat!.rate.value)})\n`;
+            text += `**Highest default rate:** ${highest.name} (${pct(highest.defaultStat!.rate.value)})\n`;
           }
-          return out + `\n${attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator])}`;
-        }),
+          return { text: text + `\n${attribution(source, vintage, out)}`, data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -434,16 +520,23 @@ const handler = createMcpHandler(
           metric: z.enum(['default-rate', 'recovery-rate']).optional().describe('Series to return (default: default-rate)'),
           data_source: dataSourceParam,
         }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const kind = metric === 'default-rate' ? 'default' : 'recovery';
+        const out = newOutput(
+          source,
+          { region, years: String(years), metric, data_source: source },
+          [kind === 'default' ? info.defaultHistory : info.recoveryHistory],
+        );
+        return guarded(out, async () => {
           const code = AREAS[region];
-          const kind = metric === 'default-rate' ? 'default' : 'recovery';
           const label = kind === 'default' ? 'Default Rate' : 'Recovery Rate';
           const history = await getHistory(source, kind, code);
           const points = history.points.slice(-years);
-          if (!points.length) return noData(`${label.toLowerCase()} history`, [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
+          if (!points.length) return noData(`${label.toLowerCase()} history`, [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
 
           const first = points[0];
           const last = points[points.length - 1];
@@ -460,30 +553,39 @@ const handler = createMcpHandler(
               : `${slope > 0.005 ? '📈 Increasing' : slope < -0.005 ? '📉 Decreasing' : '➡️ Flat'} ` +
                 `(${slope > 0 ? '+' : ''}${slope.toFixed(2)} pp per year, least-squares fit)`;
           const span = last.year - first.year + 1;
+          out.records.push(...points.map((p) => historyRecord(kind, p)));
+          out.trend = {
+            first_year: first.year,
+            last_year: last.year,
+            change_pp: change,
+            slope_pp_per_year: points.length < 3 ? null : slope,
+          };
 
-          let out = `# Historical ${label}: ${AREA_NAMES[code]} (${DATA_SOURCE_INFO[source].label})\n\n`;
-          out += `**Period:** ${first.year}–${last.year}`;
-          out += points.length < span ? ` (${points.length} published years)\n\n` : ` (${points.length} years)\n\n`;
-          out += '## Summary\n\n';
-          out += `- **Latest (${last.year}):** ${pct(last.rate)}\n`;
-          out += `- **Average of annual rates:** ${pct(rates.reduce((s, r) => s + r, 0) / rates.length)}\n`;
-          out += `- **Highest:** ${pct(Math.max(...rates))}\n`;
-          out += `- **Lowest:** ${pct(Math.min(...rates))}\n`;
-          out += `- **Change ${first.year}→${last.year}:** ${change > 0 ? '+' : ''}${change.toFixed(2)} pp\n`;
-          out += `- **Trend:** ${trend}\n\n`;
-          out += `## Year-by-Year\n\n| Year | ${label} | Change |\n|---|---|---|\n`;
+          let text = `# Historical ${label}: ${AREA_NAMES[code]} (${info.label})\n\n`;
+          text += `**Period:** ${first.year}–${last.year}`;
+          text += points.length < span ? ` (${points.length} published years)\n\n` : ` (${points.length} years)\n\n`;
+          text += '## Summary\n\n';
+          text += `- **Latest (${last.year}):** ${pct(last.rate)}\n`;
+          text += `- **Average of annual rates:** ${pct(rates.reduce((s, r) => s + r, 0) / rates.length)}\n`;
+          text += `- **Highest:** ${pct(Math.max(...rates))}\n`;
+          text += `- **Lowest:** ${pct(Math.min(...rates))}\n`;
+          text += `- **Change ${first.year}→${last.year}:** ${change > 0 ? '+' : ''}${change.toFixed(2)} pp\n`;
+          text += `- **Trend:** ${trend}\n\n`;
+          text += `## Year-by-Year\n\n| Year | ${label} | Change |\n|---|---|---|\n`;
           points.forEach((p, i) => {
             const delta = i > 0 ? p.rate - points[i - 1].rate : undefined;
-            out += `| ${p.year} | ${pct(p.rate)} | ${delta === undefined ? '-' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)} pp`} |\n`;
+            text += `| ${p.year} | ${pct(p.rate)} | ${delta === undefined ? '-' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)} pp`} |\n`;
           });
           const conflicts = history.conflictingYears.filter((y) => y >= first.year);
           if (conflicts.length) {
-            out += `\n⚠️ Data360 returned conflicting values for ${conflicts.join(', ')}; the first listed value is shown.\n`;
+            const note = `Data360 returned conflicting values for ${conflicts.join(', ')}; the first listed value is shown.`;
+            out.notes.push(note);
+            text += `\n⚠️ ${note}\n`;
           }
-          const info = DATA_SOURCE_INFO[source];
-          out += `\n*Source: World Bank Data360, IFC GEMs (${kind === 'default' ? info.defaultHistory : info.recoveryHistory}), ${info.label} — ${info.description}.*`;
-          return out;
-        }),
+          text += `\n*Source: World Bank Data360, IFC GEMs (${out.indicators.join(', ')}), ${info.label} — ${info.description}.*`;
+          return { text, data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -492,32 +594,40 @@ const handler = createMcpHandler(
         title: 'Recovery by debt seniority',
         description: `Recovery rates by debt seniority (senior secured, senior unsecured, subordinated, ...). Published for the global aggregate of public and private data. ${SOURCE_DESCRIPTION}`,
         inputSchema: z.object({ region: regionParam.optional().describe('Region to analyze (default: global)'), data_source: dataSourceParam }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region = 'global', data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ region = 'global', data_source: source = 'private' }) => {
+        const out = newOutput(source, { region, data_source: source }, [DATA_SOURCE_INFO[source].recoveryIndicator]);
+        return guarded(out, async () => {
           const code = AREAS[region];
           const stats = await getRates(source, 'recovery', { ...GLOBAL_TOTAL, REF_AREA: code }, 'SENIORITY');
           const levels = [...stats.values()].filter((s) => s.code !== '_T').sort((a, b) => b.rate.value - a.rate.value);
-          if (!levels.length) return noData('seniority breakdown', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`]);
+          if (!levels.length) return noData('seniority breakdown', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
 
-          let out = `# Recovery by Debt Seniority: ${AREA_NAMES[code]} (${DATA_SOURCE_INFO[source].label})\n\n`;
-          out += '| Seniority | Recovery Rate | Sample |\n|---|---|---|\n';
+          const seniorityName = (c: string) => SENIORITY_NAMES[c] ?? c;
+          let text = `# Recovery by Debt Seniority: ${AREA_NAMES[code]} (${DATA_SOURCE_INFO[source].label})\n\n`;
+          text += '| Seniority | Recovery Rate | Sample |\n|---|---|---|\n';
           for (const s of levels) {
             const sample = s.defaults !== undefined ? `${s.defaults.toLocaleString('en-US')} ${s.defaultsUnit}` : '';
-            out += `| ${SENIORITY_NAMES[s.code] ?? s.code} | ${pct(s.rate.value)} | ${sample} |\n`;
+            text += `| ${seniorityName(s.code)} | ${pct(s.rate.value)} | ${sample} |\n`;
+            out.records.push(rateRecord('SENIORITY', s.code, seniorityName(s.code), undefined, s));
           }
-          for (const s of levels) out += ambiguityNote(SENIORITY_NAMES[s.code] ?? s.code, s.rate);
+          for (const s of levels) text += ambiguityNote(seniorityName(s.code), s.rate, out.notes);
           const ss = stats.get('SS');
           const su = stats.get('SU');
           if (ss && su) {
             const premium = ss.rate.value - su.rate.value;
-            out += `\n**Security premium (secured − unsecured):** ${premium.toFixed(2)} pp of recovery\n`;
+            text += `\n**Security premium (secured − unsecured):** ${premium.toFixed(2)} pp of recovery\n`;
           }
           const overall = stats.get('_T');
-          if (overall) out += `**All seniority levels:** ${pct(overall.rate.value)}\n${ambiguityNote('All seniority levels', overall.rate)}`;
-          return out + `\n${attribution(source, levels[0].vintage, [DATA_SOURCE_INFO[source].recoveryIndicator])}`;
-        }),
+          if (overall) {
+            out.records.push(rateRecord('SENIORITY', '_T', SENIORITY_NAMES._T, undefined, overall));
+            text += `**All seniority levels:** ${pct(overall.rate.value)}\n${ambiguityNote('All seniority levels', overall.rate, out.notes)}`;
+          }
+          return { text: text + `\n${attribution(source, levels[0].vintage, out)}`, data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -534,10 +644,13 @@ const handler = createMcpHandler(
           projectType: z.enum(PROJECT_TYPE_KEYS).optional().describe('Project type filter (default: all project types)'),
           data_source: dataSourceParam,
         }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region = 'global', sector = 'all', projectType = 'all', data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ region = 'global', sector = 'all', projectType = 'all', data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const out = newOutput(source, { region, sector, projectType, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
+        return guarded(out, async () => {
           const slice: Slice = { ...GLOBAL_TOTAL, REF_AREA: AREAS[region], SECTOR: SECTORS[sector], PROJECT_TYPE: PROJECT_TYPES[projectType] };
           const filters = [
             `Region: ${AREA_NAMES[slice.REF_AREA]}`,
@@ -550,21 +663,22 @@ const handler = createMcpHandler(
             single(source, 'recovery', slice),
             single(source, 'default', GLOBAL_TOTAL),
           ]);
-          if (!dr && !rr) return noData('data', filters);
+          if (!dr && !rr) return noData('data', filters, out);
+          out.records.push(rateRecord('REF_AREA', slice.REF_AREA, AREA_NAMES[slice.REF_AREA], dr, rr));
 
-          let out = `# Multi-Dimensional Credit Risk Analysis\n\n## Filters\n\n${filters.map((f) => `- ${f}`).join('\n')}\n\n`;
-          out += '## Risk Metrics\n\n| Metric | Value |\n|---|---|\n';
-          out += `| Default rate | ${dr ? defaultRateText(dr) : 'not published'} |\n`;
-          out += `| Recovery rate | ${rr ? pct(rr.rate.value) : 'not published'} |\n`;
-          out += `| Expected loss | ${dr && rr ? pct(expectedLoss(dr.rate.value, rr.rate.value)) : 'n/a'} |\n`;
-          if (dr) out += ambiguityNote('Default rate', dr.rate);
-          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
-          out += '\n';
-          out += sampleLines(dr, rr);
-          if (dr) out += '\n' + benchmarkLine(source, dr.rate.value, global);
-          const info = DATA_SOURCE_INFO[source];
-          return out + attribution(source, (dr ?? rr)!.vintage, [info.defaultIndicator, info.recoveryIndicator]);
-        }),
+          let text = `# Multi-Dimensional Credit Risk Analysis\n\n## Filters\n\n${filters.map((f) => `- ${f}`).join('\n')}\n\n`;
+          text += '## Risk Metrics\n\n| Metric | Value |\n|---|---|\n';
+          text += `| Default rate | ${dr ? defaultRateText(dr) : 'not published'} |\n`;
+          text += `| Recovery rate | ${rr ? pct(rr.rate.value) : 'not published'} |\n`;
+          text += `| Expected loss | ${dr && rr ? pct(expectedLoss(dr.rate.value, rr.rate.value)) : 'n/a'} |\n`;
+          if (dr) text += ambiguityNote('Default rate', dr.rate, out.notes);
+          if (rr) text += ambiguityNote('Recovery rate', rr.rate, out.notes);
+          text += '\n';
+          text += sampleLines(dr, rr);
+          if (dr) text += '\n' + benchmarkLine(source, dr.rate.value, global, out);
+          return { text: text + attribution(source, (dr ?? rr)!.vintage, out), data: out };
+        });
+      },
     );
 
     server.registerTool(
@@ -580,15 +694,23 @@ const handler = createMcpHandler(
           years: z.number().int().min(1).max(45).optional().describe('Years of annual default-rate history (default: 10)'),
           data_source: z.enum(['private', 'public']).optional().describe('"private" (default) or "public"'),
         }),
+        outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ country, years = 10, data_source: source = 'private' }) =>
-        guarded(async () => {
+      ({ country, years = 10, data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const out = newOutput(
+          source,
+          { country, years: String(years), data_source: source },
+          [info.defaultIndicator, info.recoveryIndicator, info.defaultHistory],
+        );
+        return guarded(out, async () => {
           const match = resolveCountry(country);
-          if ('error' in match) return `ℹ️ ${match.error}`;
+          if ('error' in match) {
+            return { text: `ℹ️ ${match.error}`, data: { ...out, status: 'invalid_input', notes: [...out.notes, match.error] } };
+          }
           const code = match.code;
           const name = areaName(code);
-          const info = DATA_SOURCE_INFO[source];
           const slice = { ...GLOBAL_TOTAL, REF_AREA: code };
           const [sectors, history, global] = await Promise.all([
             breakdown(source, slice, 'SECTOR', SECTOR_NAMES),
@@ -599,38 +721,46 @@ const handler = createMcpHandler(
           const rr = sectors.recoveries.get('_T');
           if (!dr && !rr) {
             const available = await countriesWithData(source);
-            return (
-              noData('country data', [`Country: ${name} (${code})`, `Data source: ${source}`]) +
+            const answer = noData('country data', [`Country: ${name} (${code})`, `Data source: ${source}`], out);
+            answer.text +=
               `\n\nCountries with ${source} data (${available.length}): ` +
-              (available.length ? available.map((c) => `${COUNTRY_NAMES[c]} (${c})`).join(', ') : 'none')
-            );
+              (available.length ? available.map((c) => `${COUNTRY_NAMES[c]} (${c})`).join(', ') : 'none');
+            return answer;
           }
 
           const vintage = (dr ?? rr)!.vintage;
-          let out = `# Country Credit Risk: ${name} (${info.label})\n\n## Key Metrics\n\n`;
-          out += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
-          out += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
-          if (dr && rr) out += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))} per year\n`;
-          out += `**Period:** ${period(source, vintage)}\n`;
-          out += sampleLines(dr, rr);
-          if (dr) out += ambiguityNote('Default rate', dr.rate);
-          if (rr) out += ambiguityNote('Recovery rate', rr.rate);
+          out.records.push(rateRecord('REF_AREA', code, name, dr, rr));
+          let text = `# Country Credit Risk: ${name} (${info.label})\n\n## Key Metrics\n\n`;
+          text += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
+          text += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          if (dr && rr) text += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))} per year\n`;
+          text += `**Period:** ${period(source, vintage)}\n`;
+          text += sampleLines(dr, rr);
+          if (dr) text += ambiguityNote('Default rate', dr.rate, out.notes);
+          if (rr) text += ambiguityNote('Recovery rate', rr.rate, out.notes);
           if (dr?.counterparts !== undefined && dr.counterparts < 100) {
-            out += `\n⚠️ Small sample (${dr.counterparts} counterparts): treat the rate as indicative and weigh the confidence interval.\n`;
+            const note = `Small sample (${dr.counterparts} counterparts): treat the rate as indicative and weigh the confidence interval.`;
+            out.notes.push(note);
+            text += `\n⚠️ ${note}\n`;
           }
-          out += '\n';
-          if (dr) out += benchmarkLine(source, dr.rate.value, global);
+          text += '\n';
+          if (dr) text += benchmarkLine(source, dr.rate.value, global, out);
 
-          if (sectors.rows.length) out += `## By Sector\n\n${breakdownTable('Sector', sectors.rows)}\n`;
+          if (sectors.rows.length) {
+            out.records.push(...breakdownRecords('SECTOR', sectors.rows));
+            text += `## By Sector\n\n${breakdownTable('Sector', sectors.rows)}\n`;
+          }
 
           const points = history.points.slice(-years);
           if (points.length) {
-            out += `## Annual Default Rates (${points[0].year}–${points[points.length - 1].year})\n\n| Year | Default Rate |\n|---|---|\n`;
-            for (const p of points) out += `| ${p.year} | ${pct(p.rate)} |\n`;
-            out += '\n';
+            out.records.push(...points.map((p) => historyRecord('default', p)));
+            text += `## Annual Default Rates (${points[0].year}–${points[points.length - 1].year})\n\n| Year | Default Rate |\n|---|---|\n`;
+            for (const p of points) text += `| ${p.year} | ${pct(p.rate)} |\n`;
+            text += '\n';
           }
-          return out + attribution(source, vintage, [info.defaultIndicator, info.recoveryIndicator, info.defaultHistory]);
-        }),
+          return { text: text + attribution(source, vintage, out), data: out };
+        });
+      },
     );
   },
   { serverInfo: { name: 'gems-risk', version: pkg.version } },
