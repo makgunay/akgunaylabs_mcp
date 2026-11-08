@@ -229,3 +229,17 @@ export const SENIORITY_NAMES: Record<string, string> = {
   SUB: 'Subordinated',
   NAV: 'Not Available',
 };
+
+// Loan currency relative to the borrower's local currency (CURRENCY_TYPE). No split for sovereign lending.
+export const CURRENCY_TYPE_NAMES: Record<string, string> = {
+  _T: 'All currencies',
+  FC: 'Foreign currency',
+  LC: 'Local Currency',
+  LC_P: 'Pegged Local Currency',
+  X: 'Mixed Currency',
+};
+
+/** GEMs default rate (ADR) vs. S&P default rate of sovereigns rated like the project country (S_P), per area. */
+export const SOVEREIGN_BENCHMARK_INDICATOR = 'IFC_GEM_DRVSVG';
+/** Private lending: average total spread (TS) and average loss rate (LR), global only. */
+export const RETURNS_INDICATOR = 'IFC_GEM_PR_RTNS';

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolveCountry } from './catalog.ts';
 import { clearObservationCache, Data360Error, fetchObservations, type Observation } from './data360.ts';
-import { GLOBAL_TOTAL, getHistory, getRates } from './stats.ts';
+import { GLOBAL_TOTAL, getHistory, getRates, getReturns, getSovereignBenchmark } from './stats.ts';
 
 const FIXTURE: Observation[] = JSON.parse(
   readFileSync(new URL('./__fixtures__/ifc-gem-2025.json', import.meta.url), 'utf8'),
@@ -160,4 +160,54 @@ test('country names resolve to ISO3 codes without matching word prefixes', () =>
   assert.deepEqual(resolveCountry('Turkey'), { code: 'TUR' });
   assert.deepEqual(resolveCountry('DRC'), { code: 'COD' });
   assert.ok('error' in resolveCountry('Niger'), 'Niger must not resolve to Nigeria');
+});
+
+test('default and recovery rates break down by loan currency, each with its own interval', async () => {
+  const defaults = await getRates('private', 'default', GLOBAL_TOTAL, 'CURRENCY_TYPE');
+  assert.equal(defaults.get('FC')?.rate.value, 3.26);
+  assert.deepEqual(defaults.get('FC')?.ci90, [2.9, 3.62]);
+  assert.equal(defaults.get('LC_P')?.rate.value, 6.32);
+  assert.deepEqual(defaults.get('LC_P')?.ci90, [5.31, 7.33]);
+  assert.equal(defaults.get('_T')?.rate.value, 3.45);
+  const recoveries = await getRates('private', 'recovery', GLOBAL_TOTAL, 'CURRENCY_TYPE');
+  assert.equal(recoveries.get('LC_P')?.rate.value, 72.57);
+});
+
+test('recovery percentiles are reported only when each has a single published value', async () => {
+  const eas = (await getRates('private', 'recovery', { ...GLOBAL_TOTAL, REF_AREA: 'EAS' })).get('EAS');
+  assert.deepEqual(eas?.distribution, { p10: 22.203054, p25: 43.167597, median: 86.784158, p75: 99.129323, p90: 100 });
+  assert.equal(eas?.distributionOmitted, undefined);
+  // The global percentiles are split by a dimension the API does not expose.
+  const wld = (await getRates('private', 'recovery', GLOBAL_TOTAL)).get('WLD');
+  assert.equal(wld?.distribution, undefined);
+  assert.equal(wld?.distributionOmitted, true);
+});
+
+test('sovereign benchmark pairs GEMs and S&P default rates and drops the ambiguous global aggregate', async () => {
+  const benchmark = await getSovereignBenchmark();
+  assert.deepEqual(benchmark.get('EAS'), { gems: 3.64, sovereign: 3.12, vintage: '2025' });
+  assert.deepEqual(benchmark.get('LIC'), { gems: 6.764915, sovereign: 28.151879, vintage: '2025' });
+  assert.equal(benchmark.has('WLD'), false);
+});
+
+test('spreads and loss rates exclude values dated outside the publication vintage', async () => {
+  const returns = await getReturns();
+  assert.equal(returns.vintage, '2025');
+  assert.deepEqual(returns.entries[0], {
+    dimension: 'TOTAL',
+    code: '_T',
+    totalSpread: { value: 3.765236, candidates: [3.765236], method: 'unique' },
+    lossRate: { value: 0.9, candidates: [0.9], method: 'unique' },
+  });
+  const pf = returns.entries.find((e) => e.dimension === 'PROJECT_TYPE' && e.code === 'PF');
+  assert.equal(pf?.lossRate?.value, 0.952409);
+  assert.equal(pf?.totalSpread, undefined);
+  assert.deepEqual(returns.misdated, [{ dimension: 'PROJECT_TYPE', code: 'PF', metric: 'TS', timePeriod: '2006' }]);
+});
+
+test('sector history is the annual series of that sector', async () => {
+  const history = await getHistory('private', 'default', 'WLD', 'IN');
+  assert.equal(history.points.length, 32);
+  assert.deepEqual(history.points[0], { year: 1994, rate: 0, candidates: [0] });
+  assert.deepEqual(history.points.at(-1), { year: 2025, rate: 1.84, candidates: [1.84] });
 });

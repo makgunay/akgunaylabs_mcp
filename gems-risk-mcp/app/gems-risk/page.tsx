@@ -79,7 +79,7 @@ export default function GemsRiskPage() {
       </section>
 
       <section style={{ marginBottom: '2rem' }}>
-        <h2 style={{ color: '#333' }}>📊 Available Tools (9 total)</h2>
+        <h2 style={{ color: '#333' }}>📊 Available Tools (13 total)</h2>
         <div style={{ display: 'grid', gap: '1rem' }}>
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>1. get_default_rates</strong>
@@ -107,7 +107,7 @@ export default function GemsRiskPage() {
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>5. get_sector_analysis</strong>
-            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Analyze credit performance by economic sector</p>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Analyze credit performance by economic sector, globally or per region</p>
             <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Private sector default rate for infrastructure lending?"</code>
           </div>
 
@@ -119,7 +119,7 @@ export default function GemsRiskPage() {
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>7. get_time_series</strong>
-            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Track default and recovery rates over time</p>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Track default and recovery rates over time, optionally for one sector</p>
             <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Show 10-year default rate trend for South Asia"</code>
           </div>
 
@@ -139,6 +139,24 @@ export default function GemsRiskPage() {
             <strong style={{ color: '#0066cc' }}>10. get_country_risk</strong>
             <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Country profile with confidence interval, sectors and annual history</p>
             <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Credit risk of lending to Kenyan companies"</code>
+          </div>
+
+          <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
+            <strong style={{ color: '#0066cc' }}>11. get_currency_analysis</strong>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Default and recovery rates by loan currency (foreign, local, pegged local, mixed)</p>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Are local-currency loans riskier than foreign-currency loans?"</code>
+          </div>
+
+          <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
+            <strong style={{ color: '#0066cc' }}>12. get_sovereign_benchmark</strong>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>GEMs default rates vs S&amp;P default rates of sovereigns with the same rating</p>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Do GEMs loans default less often than sovereign ratings imply?"</code>
+          </div>
+
+          <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
+            <strong style={{ color: '#0066cc' }}>13. get_spreads_and_losses</strong>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Average total spread and loss rate of private lending by currency, project type and seniority</p>
+            <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Spreads vs loss rates for project finance"</code>
           </div>
         </div>
       </section>
@@ -261,20 +279,20 @@ export default function GemsRiskPage() {
       <section style={{ marginBottom: '2rem', background: '#f0f5ff', padding: '1.5rem', borderRadius: '8px', border: '1px solid #adc6ff' }}>
         <h2 style={{ color: '#333', marginTop: 0 }}>📖 Version Information</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.5rem', fontSize: '0.9rem' }}>
-          <div><strong>Version:</strong> 1.2.0</div>
-          <div><strong>Tools:</strong> 10</div>
+          <div><strong>Version:</strong> 1.3.0</div>
+          <div><strong>Tools:</strong> 13</div>
           <div><strong>Areas:</strong> 7 regions, 4 income groups, 90 countries</div>
           <div><strong>Sectors:</strong> 22 (IFC + GICS + mixed)</div>
           <div><strong>Data Sources:</strong> 3 (Sovereign, Public, Private)</div>
         </div>
 
-        <h3 style={{ fontSize: '1rem', color: '#0066cc', marginTop: '1rem', marginBottom: '0.5rem' }}>What's New in 1.2.0</h3>
+        <h3 style={{ fontSize: '1rem', color: '#0066cc', marginTop: '1rem', marginBottom: '0.5rem' }}>What's New in 1.3.0</h3>
         <ul style={{ margin: 0, lineHeight: '1.6', fontSize: '0.9rem' }}>
-          <li>Live Data360 data restored for every tool</li>
-          <li>Country profiles and country / income-group rankings</li>
-          <li>90% confidence intervals for default rates</li>
-          <li>No synthetic fallback numbers; unpublished breakdowns are reported as such</li>
-          <li>Recovery-rate history and all published seniority levels</li>
+          <li>Private sector data by default</li>
+          <li>Structured JSON output on every tool</li>
+          <li>Loan currency breakdown, sovereign benchmark, spreads and loss rates</li>
+          <li>Recovery distribution percentiles</li>
+          <li>Sectors per region and sector history</li>
         </ul>
       </section>
 
