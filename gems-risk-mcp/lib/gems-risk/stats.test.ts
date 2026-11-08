@@ -94,7 +94,20 @@ test('annual history is ordered by year and flags years with conflicting values'
   assert.deepEqual(years, [...years].sort((a, b) => a - b));
   assert.equal(new Set(years).size, years.length);
   assert.deepEqual(history.points[0], { year: 1984, rate: 91.8, candidates: [91.8] });
+  // A conflicting year keeps every distinct value in API order and shows the first.
+  assert.deepEqual(history.points.find((p) => p.year === 2000), { year: 2000, rate: 99.04, candidates: [99.04, 57.54, 88.67] });
   assert.deepEqual(history.conflictingYears, [2000, 2018, 2022, 2023, 2025]);
+});
+
+test('a value repeated for the same year is not a conflict', async () => {
+  const row = FIXTURE.find(
+    (r) => r.INDICATOR === 'IFC_GEM_SR_H' && r.METRIC === 'ARR' && r.REF_AREA === 'WLD' && r.TIME_PERIOD === '1984' && r.SECTOR === '_T',
+  )!;
+  assert.equal(row.OBS_VALUE, '91.8');
+  serve([...FIXTURE, { ...row }]);
+  const history = await getHistory('sovereign', 'recovery', 'WLD');
+  assert.deepEqual(history.points[0], { year: 1984, rate: 91.8, candidates: [91.8] });
+  assert.equal(history.conflictingYears.includes(1984), false);
 });
 
 test('failed requests surface as Data360Error and are not cached', async () => {
