@@ -21,12 +21,13 @@ A Model Context Protocol server that provides access to the GEMs (Global Emergin
 - Access comprehensive risk statistics from 29 development banks
 - Retrieve data covering $425+ billion in loans across 31 years
 
+See [gems-risk-mcp/README.md](gems-risk-mcp/README.md) for tools, setup and examples.
+
 ## Repository Structure
 
 ```
 akgunaylabs_mcp/
 ├── README.md (this file)
-├── USAGE_GUIDE.md
 ├── .gitignore
 └── gems-risk-mcp/          # GEMs Risk Database MCP
     ├── app/                 # Next.js App Router

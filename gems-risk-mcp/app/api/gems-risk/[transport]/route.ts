@@ -30,7 +30,7 @@ type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean
 
 const SOURCE_DESCRIPTION =
   'Data sources: "sovereign" (sovereign and sovereign-guaranteed debt), "public" (sub-sovereign public sector), ' +
-  '"private" (corporate/private sector, largest sample). Default: public.';
+  '"private" (corporate/private sector, largest sample). Default: private.';
 
 const dataSourceParam = z.enum(DATA_SOURCES).optional().describe(SOURCE_DESCRIPTION);
 const regionParam = z.enum(AREA_KEYS);
@@ -221,7 +221,7 @@ const handler = createMcpHandler(
         inputSchema: { region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam },
         annotations: READ_ONLY,
       },
-      ({ region, data_source: source = 'public' }) =>
+      ({ region, data_source: source = 'private' }) =>
         guarded(async () => {
           const code = AREAS[region];
           const stat = await single(source, 'default', { ...GLOBAL_TOTAL, REF_AREA: code });
@@ -245,7 +245,7 @@ const handler = createMcpHandler(
         inputSchema: { region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam },
         annotations: READ_ONLY,
       },
-      ({ region, data_source: source = 'public' }) =>
+      ({ region, data_source: source = 'private' }) =>
         guarded(async () => {
           const code = AREAS[region];
           const stat = await single(source, 'recovery', { ...GLOBAL_TOTAL, REF_AREA: code });
@@ -271,7 +271,7 @@ const handler = createMcpHandler(
         inputSchema: { region: regionParam.describe('Region or income group to analyze'), data_source: dataSourceParam },
         annotations: READ_ONLY,
       },
-      ({ region, data_source: source = 'public' }) =>
+      ({ region, data_source: source = 'private' }) =>
         guarded(async () => {
           const code = AREAS[region];
           const slice = { ...GLOBAL_TOTAL, REF_AREA: code };
@@ -307,7 +307,7 @@ const handler = createMcpHandler(
         },
         annotations: READ_ONLY,
       },
-      ({ sector = 'all', data_source: source = 'public' }) =>
+      ({ sector = 'all', data_source: source = 'private' }) =>
         guarded(async () => {
           const info = DATA_SOURCE_INFO[source];
           const code = SECTORS[sector];
@@ -356,7 +356,7 @@ const handler = createMcpHandler(
         },
         annotations: READ_ONLY,
       },
-      ({ metric, grouping = 'region', data_source: source = 'public' }) =>
+      ({ metric, grouping = 'region', data_source: source = 'private' }) =>
         guarded(async () => {
           const info = DATA_SOURCE_INFO[source];
           const codes = COMPARISON_GROUPS[grouping];
@@ -402,7 +402,7 @@ const handler = createMcpHandler(
         },
         annotations: READ_ONLY,
       },
-      ({ projectType = 'all', data_source: source = 'public' }) =>
+      ({ projectType = 'all', data_source: source = 'private' }) =>
         guarded(async () => {
           const info = DATA_SOURCE_INFO[source];
           const { rows, vintage } = await breakdown(source, GLOBAL_TOTAL, 'PROJECT_TYPE', PROJECT_TYPE_NAMES);
@@ -436,7 +436,7 @@ const handler = createMcpHandler(
         },
         annotations: READ_ONLY,
       },
-      ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'public' }) =>
+      ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'private' }) =>
         guarded(async () => {
           const code = AREAS[region];
           const kind = metric === 'default-rate' ? 'default' : 'recovery';
@@ -494,7 +494,7 @@ const handler = createMcpHandler(
         inputSchema: { region: regionParam.optional().describe('Region to analyze (default: global)'), data_source: dataSourceParam },
         annotations: READ_ONLY,
       },
-      ({ region = 'global', data_source: source = 'public' }) =>
+      ({ region = 'global', data_source: source = 'private' }) =>
         guarded(async () => {
           const code = AREAS[region];
           const stats = await getRates(source, 'recovery', { ...GLOBAL_TOTAL, REF_AREA: code }, 'SENIORITY');
@@ -536,7 +536,7 @@ const handler = createMcpHandler(
         },
         annotations: READ_ONLY,
       },
-      ({ region = 'global', sector = 'all', projectType = 'all', data_source: source = 'public' }) =>
+      ({ region = 'global', sector = 'all', projectType = 'all', data_source: source = 'private' }) =>
         guarded(async () => {
           const slice: Slice = { ...GLOBAL_TOTAL, REF_AREA: AREAS[region], SECTOR: SECTORS[sector], PROJECT_TYPE: PROJECT_TYPES[projectType] };
           const filters = [
