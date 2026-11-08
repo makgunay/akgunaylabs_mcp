@@ -218,7 +218,7 @@ const handler = createMcpHandler(
       {
         title: 'Default rates by region',
         description: `Average annual default rate for emerging-market lending in a region, with sample size. ${SOURCE_DESCRIPTION}`,
-        inputSchema: { region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam },
+        inputSchema: z.object({ region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam }),
         annotations: READ_ONLY,
       },
       ({ region, data_source: source = 'private' }) =>
@@ -242,7 +242,7 @@ const handler = createMcpHandler(
       {
         title: 'Recovery rates by region',
         description: `Average recovery rate on defaulted exposures in a region. ${SOURCE_DESCRIPTION}`,
-        inputSchema: { region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam },
+        inputSchema: z.object({ region: regionParam.describe('Region or income group to query'), data_source: dataSourceParam }),
         annotations: READ_ONLY,
       },
       ({ region, data_source: source = 'private' }) =>
@@ -268,7 +268,7 @@ const handler = createMcpHandler(
       {
         title: 'Credit risk profile',
         description: `Credit risk profile for a region: default rate, recovery rate, expected loss and sample size. ${SOURCE_DESCRIPTION}`,
-        inputSchema: { region: regionParam.describe('Region or income group to analyze'), data_source: dataSourceParam },
+        inputSchema: z.object({ region: regionParam.describe('Region or income group to analyze'), data_source: dataSourceParam }),
         annotations: READ_ONLY,
       },
       ({ region, data_source: source = 'private' }) =>
@@ -301,10 +301,10 @@ const handler = createMcpHandler(
       {
         title: 'Credit risk by sector',
         description: `Global default and recovery rates by economic sector (IFC categories and GICS sectors), or one sector in detail. ${SOURCE_DESCRIPTION}`,
-        inputSchema: {
+        inputSchema: z.object({
           sector: z.enum(SECTOR_KEYS).optional().describe('Sector to analyze, or "all" (default) for a comparison table'),
           data_source: dataSourceParam,
-        },
+        }),
         annotations: READ_ONLY,
       },
       ({ sector = 'all', data_source: source = 'private' }) =>
@@ -349,11 +349,11 @@ const handler = createMcpHandler(
         description:
           `Rank regions, income groups or countries by default and/or recovery rate, with sample sizes. ${SOURCE_DESCRIPTION} ` +
           'Country rankings exist for private (90 countries) and public (14) data.',
-        inputSchema: {
+        inputSchema: z.object({
           metric: z.enum(['default-rate', 'recovery-rate', 'both']).describe('Metric to compare'),
           grouping: z.enum(['region', 'income', 'country']).optional().describe('What to rank (default: region)'),
           data_source: dataSourceParam,
-        },
+        }),
         annotations: READ_ONLY,
       },
       ({ metric, grouping = 'region', data_source: source = 'private' }) =>
@@ -396,10 +396,10 @@ const handler = createMcpHandler(
       {
         title: 'Credit risk by project type',
         description: `Global default and recovery rates by financing type (corporate, project, structured finance, ...). ${SOURCE_DESCRIPTION}`,
-        inputSchema: {
+        inputSchema: z.object({
           projectType: z.enum(PROJECT_TYPE_KEYS).optional().describe('Project type to analyze, or "all" (default) for a comparison table'),
           data_source: dataSourceParam,
-        },
+        }),
         annotations: READ_ONLY,
       },
       ({ projectType = 'all', data_source: source = 'private' }) =>
@@ -428,12 +428,12 @@ const handler = createMcpHandler(
       {
         title: 'Historical credit risk trend',
         description: `Annual default or recovery rates over recent years for a region. ${SOURCE_DESCRIPTION} Sovereign history is published for the global aggregate only.`,
-        inputSchema: {
+        inputSchema: z.object({
           region: regionParam.optional().describe('Region to analyze (default: global); income groups have no history'),
           years: z.number().int().min(1).max(45).optional().describe('Number of most recent published years (default: 10)'),
           metric: z.enum(['default-rate', 'recovery-rate']).optional().describe('Series to return (default: default-rate)'),
           data_source: dataSourceParam,
-        },
+        }),
         annotations: READ_ONLY,
       },
       ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'private' }) =>
@@ -491,7 +491,7 @@ const handler = createMcpHandler(
       {
         title: 'Recovery by debt seniority',
         description: `Recovery rates by debt seniority (senior secured, senior unsecured, subordinated, ...). Published for the global aggregate of public and private data. ${SOURCE_DESCRIPTION}`,
-        inputSchema: { region: regionParam.optional().describe('Region to analyze (default: global)'), data_source: dataSourceParam },
+        inputSchema: z.object({ region: regionParam.optional().describe('Region to analyze (default: global)'), data_source: dataSourceParam }),
         annotations: READ_ONLY,
       },
       ({ region = 'global', data_source: source = 'private' }) =>
@@ -528,12 +528,12 @@ const handler = createMcpHandler(
           'Default and recovery rates for a region + sector + project type combination. For private data, sectors ' +
           '(IFC categories and GICS) are published per region; public sector breakdowns and project types only globally. ' +
           `Combinations of sector and project type are not published. ${SOURCE_DESCRIPTION}`,
-        inputSchema: {
+        inputSchema: z.object({
           region: regionParam.optional().describe('Region filter (default: global)'),
           sector: z.enum(SECTOR_KEYS).optional().describe('Sector filter (default: all sectors)'),
           projectType: z.enum(PROJECT_TYPE_KEYS).optional().describe('Project type filter (default: all project types)'),
           data_source: dataSourceParam,
-        },
+        }),
         annotations: READ_ONLY,
       },
       ({ region = 'global', sector = 'all', projectType = 'all', data_source: source = 'private' }) =>
@@ -575,11 +575,11 @@ const handler = createMcpHandler(
           'Credit risk profile for one country: default rate with 90% confidence interval, recovery rate, expected loss, ' +
           'sample size, sector breakdown and recent annual default rates. Country statistics exist for private sector ' +
           'lending (90 countries) and public sector lending (14 countries); none for sovereign. Default data source: private.',
-        inputSchema: {
+        inputSchema: z.object({
           country: z.string().min(2).max(60).describe('ISO3 code (e.g. "KEN") or English country name (e.g. "Kenya")'),
           years: z.number().int().min(1).max(45).optional().describe('Years of annual default-rate history (default: 10)'),
           data_source: z.enum(['private', 'public']).optional().describe('"private" (default) or "public"'),
-        },
+        }),
         annotations: READ_ONLY,
       },
       ({ country, years = 10, data_source: source = 'private' }) =>
@@ -634,8 +634,6 @@ const handler = createMcpHandler(
     );
   },
   { serverInfo: { name: 'gems-risk', version: pkg.version } },
-  // SSE needs Redis, which this deployment does not use; streamable HTTP at /mcp is the supported transport.
-  { basePath: '/api/gems-risk', disableSse: true },
 );
 
 export { handler as GET, handler as POST, handler as DELETE };
