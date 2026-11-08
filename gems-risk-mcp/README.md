@@ -95,7 +95,7 @@ If your MCP client supports direct HTTP connections:
 
 ## 📊 Available Tools
 
-The server provides **13 specialized tools** for querying credit risk data. `region` parameters accept the 7 regions and 4 World Bank income groups (`high-income`, `upper-middle-income`, `lower-middle-income`, `low-income`). Default rates come with their 90% confidence interval where GEMs publishes one.
+The server provides **13 specialized tools** for querying credit risk data. `region` parameters accept the 7 regions and 4 World Bank income groups (`high-income`, `upper-middle-income`, `lower-middle-income`, `low-income`). Default rates come with their 90% confidence interval where GEMs publishes one. `get_recovery_rates`, `query_credit_risk` and `get_country_risk` also show the recovery distribution (10th, 25th, median, 75th and 90th percentile) where Data360 publishes a single one for the breakdown.
 
 **Structured output:** every tool returns, alongside the markdown answer, a JSON `structuredContent` object described by its `outputSchema`: `status` (`ok`, `no_data`, `invalid_input`, `error`), `data_source`, publication `vintage`, Data360 `indicators`, effective `filters`, `records` (one per region, sector, project type, seniority level, loan currency or year, with `default_rate`/`recovery_rate` as `{ value_pct, candidates_pct, method }`, confidence interval, recovery distribution, expected loss and sample counts; `sovereign_benchmark_pct`, `total_spread` and `loss_rate` for the benchmark and spread tools) and `notes` (the same warnings as the ⚠️ lines in the text). `candidates_pct` lists every value Data360 returned for the key; more than one means the breakdown was ambiguous and `method` tells how the shown value was chosen.
 
@@ -181,8 +181,6 @@ Country profile: default rate with confidence interval, recovery rate, expected 
 ```
 What's the credit risk of lending to Kenyan companies?
 ```
-
-Recovery tools (`get_recovery_rates`, `query_credit_risk`, `get_country_risk`) also show the recovery distribution (10th, 25th, median, 75th and 90th percentile) where Data360 publishes a single one for the breakdown.
 
 ### 11. `get_currency_analysis`
 Default and recovery rates by loan currency: foreign currency, local currency, pegged local currency, mixed currency. Per region for private and public data; sovereign lending and income groups have no currency split.

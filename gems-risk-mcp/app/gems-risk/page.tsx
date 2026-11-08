@@ -119,7 +119,7 @@ export default function GemsRiskPage() {
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>7. get_time_series</strong>
-            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Track default and recovery rates over time, optionally for one sector</p>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>Track default and recovery rates over time, optionally for one sector (sector history: global aggregate only)</p>
             <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Show 10-year default rate trend for South Asia"</code>
           </div>
 
@@ -149,7 +149,7 @@ export default function GemsRiskPage() {
 
           <div style={{ padding: '1rem', background: '#f8f9fa', borderRadius: '6px' }}>
             <strong style={{ color: '#0066cc' }}>12. get_sovereign_benchmark</strong>
-            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>GEMs default rates vs S&amp;P default rates of sovereigns with the same rating</p>
+            <p style={{ margin: '0.25rem 0 0 0', color: '#555' }}>GEMs default rates vs S&amp;P default rates of sovereigns with the same rating as the project&apos;s country</p>
             <code style={{ fontSize: '0.85rem', color: '#666' }}>Example: "Do GEMs loans default less often than sovereign ratings imply?"</code>
           </div>
 

@@ -94,15 +94,21 @@ function period(source: DataSource, vintage: string): string {
 
 const STALE_NOTE = 'This is the latest GEMs publication on Data360; it may predate the current GEMs report.';
 
+/** Record `vintage` in `out`; returns the stale-publication suffix for the source line ('' when current). */
+function recordVintage(vintage: string, out: ToolOutput): string {
+  out.vintage = vintage;
+  if (Number(vintage) >= new Date().getFullYear() - 1) return '';
+  out.notes.push(STALE_NOTE);
+  return ` ⚠️ ${STALE_NOTE}`;
+}
+
 /** Source line for `out.indicators`; records the vintage (and staleness) in `out`. */
 function attribution(source: DataSource, vintage: string, out: ToolOutput): string {
   const info = DATA_SOURCE_INFO[source];
-  out.vintage = vintage;
-  const isStale = Number(vintage) < new Date().getFullYear() - 1;
-  if (isStale) out.notes.push(STALE_NOTE);
+  const stale = recordVintage(vintage, out);
   return (
     `*Source: World Bank Data360, IFC GEMs (${out.indicators.join(', ')}), ${info.label} — ${info.description}. ` +
-    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${isStale ? ` ⚠️ ${STALE_NOTE}` : ''}*`
+    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${stale}*`
   );
 }
 
@@ -892,10 +898,17 @@ const handler = createMcpHandler(
               sovereign_benchmark_pct: sovereign,
             });
           }
-          out.vintage = benchmark.get(areas[0])!.vintage;
+          const vintages = [...new Set(areas.map((a) => benchmark.get(a)!.vintage))].sort();
+          if (vintages.length > 1) {
+            const mixed = `Areas come from different publication vintages (${vintages.join(', ')}).`;
+            out.notes.push(mixed);
+            text += `\n⚠️ ${mixed}\n`;
+          }
+          const latest = vintages[vintages.length - 1];
+          const stale = recordVintage(latest, out);
           text +=
             `\n${omitted}\n\n` +
-            `*Source: World Bank Data360, IFC GEMs (${SOVEREIGN_BENCHMARK_INDICATOR}). Publication vintage ${out.vintage}.*`;
+            `*Source: World Bank Data360, IFC GEMs (${SOVEREIGN_BENCHMARK_INDICATOR}). Publication vintage ${latest}.${stale}*`;
           return { text, data: out };
         });
       },
@@ -918,7 +931,6 @@ const handler = createMcpHandler(
         return guarded(out, async () => {
           const { vintage, entries, misdated } = await getReturns();
           if (!entries.length) return noData('spreads or loss rates', ['Indicator: IFC_GEM_PR_RTNS'], out);
-          out.vintage = vintage;
           const cell = (s?: Selection) => (s ? pct(s.value) + marker(s) : 'n/a');
           let text =
             '# Spreads and Loss Rates (Private Sector Lending, Global)\n\n' +
@@ -952,7 +964,7 @@ const handler = createMcpHandler(
             '\nAverage total spread: average of annual total spreads, each across contracts signed in the prior year. ' +
             'Average loss rate: average default rate × (1 − average recovery rate).\n\n' +
             `*Source: World Bank Data360, IFC GEMs (${RETURNS_INDICATOR}), Private sector — ` +
-            `${DATA_SOURCE_INFO.private.description}. Publication vintage ${vintage}.*`;
+            `${DATA_SOURCE_INFO.private.description}. Publication vintage ${vintage}.${recordVintage(vintage, out)}*`;
           return { text, data: out };
         });
       },
