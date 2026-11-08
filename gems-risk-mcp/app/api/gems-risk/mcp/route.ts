@@ -404,7 +404,7 @@ const handler = createMcpHandler(
           sector: z.enum(SECTOR_KEYS).optional().describe('Sector to analyze, or "all" (default) for a comparison table'),
           region: regionParam
             .optional()
-            .describe('Region or income group (default: global). Private sector data is published per region; public only globally.'),
+            .describe('Region to analyze (default: global); income groups have no sector breakdown. Public sector data is global only.'),
           data_source: dataSourceParam,
         }),
         outputSchema: ToolOutputSchema,
@@ -566,7 +566,7 @@ const handler = createMcpHandler(
           region: regionParam.optional().describe('Region to analyze (default: global); income groups have no history'),
           years: z.number().int().min(1).max(45).optional().describe('Number of most recent published years (default: 10)'),
           metric: z.enum(['default-rate', 'recovery-rate']).optional().describe('Series to return (default: default-rate)'),
-          sector: z.enum(SECTOR_KEYS).optional().describe('Sector (default: all sectors)'),
+          sector: z.enum(SECTOR_KEYS).optional().describe('Sector (default: all sectors); sector history is published for region "global" only'),
           data_source: dataSourceParam,
         }),
         outputSchema: ToolOutputSchema,
@@ -827,10 +827,10 @@ const handler = createMcpHandler(
         title: 'Credit risk by loan currency',
         description:
           'Default and recovery rates by loan currency in a region: foreign currency (FC), local currency (LC), local ' +
-          'currency pegged to another currency (LC_P) and mixed-currency loans (X). Private sector data is published per ' +
-          `region; public sector data for fewer areas; sovereign lending has no currency split. ${SOURCE_DESCRIPTION}`,
+          'currency pegged to another currency (LC_P) and mixed-currency loans (X). Private and public sector data are ' +
+          `published per region; sovereign lending has no currency split. ${SOURCE_DESCRIPTION}`,
         inputSchema: z.object({
-          region: regionParam.optional().describe('Region or income group (default: global)'),
+          region: regionParam.optional().describe('Region to analyze (default: global); income groups have no currency breakdown'),
           data_source: dataSourceParam,
         }),
         outputSchema: ToolOutputSchema,

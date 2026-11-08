@@ -271,7 +271,15 @@ export async function getReturns(): Promise<Returns> {
       if (loss.length) entry.lossRate = selectRate(loss);
       return entry;
     });
-  return { vintage, entries, misdated: [...misdated.values()] };
+  // Only report an old-dated value as not shown when the vintage has no value for that metric.
+  const shown = new Set(
+    entries.flatMap((e) => [e.totalSpread && `${e.dimension}:${e.code}:TS`, e.lossRate && `${e.dimension}:${e.code}:LR`]),
+  );
+  return {
+    vintage,
+    entries,
+    misdated: [...misdated.values()].filter((m) => !shown.has(`${m.dimension}:${m.code}:${m.metric}`)),
+  };
 }
 
 /**

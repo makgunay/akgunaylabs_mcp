@@ -183,6 +183,14 @@ test('recovery percentiles are reported only when each has a single published va
   assert.equal(wld?.distributionOmitted, true);
 });
 
+test('a recovery breakdown without percentile rows reports no distribution and no omission', async () => {
+  serve(FIXTURE.filter((r) => !(r.INDICATOR === 'IFC_GEM_PRR' && r.REF_AREA === 'EAS' && r.METRIC !== 'ARR')));
+  const eas = (await getRates('private', 'recovery', { ...GLOBAL_TOTAL, REF_AREA: 'EAS' })).get('EAS');
+  assert.ok(eas);
+  assert.equal(eas.distribution, undefined);
+  assert.equal(eas.distributionOmitted, undefined);
+});
+
 test('sovereign benchmark pairs GEMs and S&P default rates and drops the ambiguous global aggregate', async () => {
   const benchmark = await getSovereignBenchmark();
   assert.deepEqual(benchmark.get('EAS'), { gems: 3.64, sovereign: 3.12, vintage: '2025' });
@@ -205,7 +213,19 @@ test('spreads and loss rates exclude values dated outside the publication vintag
   assert.deepEqual(returns.misdated, [{ dimension: 'PROJECT_TYPE', code: 'PF', metric: 'TS', timePeriod: '2006' }]);
 });
 
+test('an older-dated value is not reported as hidden once the vintage publishes that metric', async () => {
+  const pfSpread = FIXTURE.find((r) => r.INDICATOR === 'IFC_GEM_PR_RTNS' && r.PROJECT_TYPE === 'PF' && r.METRIC === 'TS')!;
+  serve([...FIXTURE, { ...pfSpread, TIME_PERIOD: '2025', OBS_VALUE: '4.2' }]);
+  const returns = await getReturns();
+  const pf = returns.entries.find((e) => e.dimension === 'PROJECT_TYPE' && e.code === 'PF');
+  assert.equal(pf?.totalSpread?.value, 4.2);
+  assert.deepEqual(returns.misdated, []);
+});
+
 test('sector history is the annual series of that sector', async () => {
+  // An all-sector row for the same indicator must not leak into the sector series.
+  const row = FIXTURE.find((r) => r.INDICATOR === 'IFC_GEM_PRD_H' && r.SECTOR === 'IN')!;
+  serve([...FIXTURE, { ...row, SECTOR: '_T', OBS_VALUE: '9.99' }]);
   const history = await getHistory('private', 'default', 'WLD', 'IN');
   assert.equal(history.points.length, 32);
   assert.deepEqual(history.points[0], { year: 1994, rate: 0, candidates: [0] });

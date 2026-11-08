@@ -133,7 +133,7 @@ Rank countries by private sector default rate
 ```
 
 ### 5. `get_sector_analysis`
-Default and recovery rates by sector (IFC categories such as banking, infrastructure, renewables; GICS sectors such as energy, utilities) for a region or income group (`region`, default global). Private sector data is published per region; public sector data only globally.
+Default and recovery rates by sector (IFC categories such as banking, infrastructure, renewables; GICS sectors such as energy, utilities) for a region (`region`, default global). Private sector data is published per region; public sector data only globally; income groups have no sector breakdown.
 
 **Example:**
 ```
@@ -150,7 +150,7 @@ Compare project finance vs corporate finance in terms of credit risk
 ```
 
 ### 7. `get_time_series`
-Track annual default or recovery rates over time, optionally for one sector (`sector`, e.g. infrastructure)
+Track annual default or recovery rates over time, optionally for one sector (`sector`, e.g. infrastructure; sector history is published for the global aggregate only)
 
 **Example:**
 ```
@@ -185,7 +185,7 @@ What's the credit risk of lending to Kenyan companies?
 Recovery tools (`get_recovery_rates`, `query_credit_risk`, `get_country_risk`) also show the recovery distribution (10th, 25th, median, 75th and 90th percentile) where Data360 publishes a single one for the breakdown.
 
 ### 11. `get_currency_analysis`
-Default and recovery rates by loan currency: foreign currency, local currency, pegged local currency, mixed currency. Per region for private data; sovereign lending has no currency split.
+Default and recovery rates by loan currency: foreign currency, local currency, pegged local currency, mixed currency. Per region for private and public data; sovereign lending and income groups have no currency split.
 
 **Example:**
 ```
