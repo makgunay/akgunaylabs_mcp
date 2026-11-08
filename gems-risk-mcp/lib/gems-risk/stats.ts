@@ -9,11 +9,11 @@
 //   Default rates resolve exactly: the headline ADR equals 100 × defaults / observations of the aggregate,
 //   whose counts are the largest in the group (verified on every ambiguous default key of the 2025 vintage).
 
-import { DATABASE_ID, DATA_SOURCE_INFO, type DataSource } from './catalog.ts';
+import { DATABASE_ID, DATA_SOURCE_INFO, RETURNS_INDICATOR, SOVEREIGN_BENCHMARK_INDICATOR, type DataSource } from './catalog.ts';
 import { fetchObservations, type Filters, type Observation } from './data360.ts';
 
 export type Kind = 'default' | 'recovery';
-export type GroupDimension = 'REF_AREA' | 'SECTOR' | 'PROJECT_TYPE' | 'SENIORITY';
+export type GroupDimension = 'REF_AREA' | 'SECTOR' | 'PROJECT_TYPE' | 'SENIORITY' | 'CURRENCY_TYPE';
 
 export interface Slice {
   REF_AREA: string;
@@ -63,7 +63,14 @@ export interface RateStat {
   signedAmountEURm?: number;
   /** 90% confidence interval of the default rate, in percent (default tables). */
   ci90?: [number, number];
+  /** Percentiles of recoveries on defaulted exposures, in percent (recovery tables), when published unambiguously. */
+  distribution?: RecoveryDistribution;
+  /** Percentile rows exist but some percentile has several values (split by a hidden dimension), so none is shown. */
+  distributionOmitted?: true;
 }
+
+const PERCENTILE_METRICS = { p10: 'PT_10', p25: 'PT_25', median: 'MEDIAN', p75: 'PT_75', p90: 'PT_90' } as const;
+export type RecoveryDistribution = Record<keyof typeof PERCENTILE_METRICS, number>;
 
 /**
  * Snapshot rate statistics for `slice`. With `groupBy`, that dimension is left unfiltered and one entry is
@@ -102,7 +109,7 @@ export async function getRates(
 
   const result = new Map<string, RateStat>();
   for (const [code, groupRows] of groups) {
-    const vintage = groupRows.reduce((max, r) => (r.TIME_PERIOD > max ? r.TIME_PERIOD : max), '');
+    const vintage = latestVintage(groupRows);
     const latest = groupRows.filter((r) => r.TIME_PERIOD === vintage);
     const rateRows = latest.filter((r) => r.METRIC === RATE_METRIC[kind]);
     if (rateRows.length === 0) continue;
@@ -113,11 +120,12 @@ export async function getRates(
 
     let anchor: Anchor | undefined;
     if (distinct(rateRows).length > 1) {
-      // Annual series exist only for project-type/seniority totals.
+      // Annual series exist only for project-type/seniority totals and have no currency split, so a currency
+      // grouping could only anchor its `_T` aggregate; that is skipped so a failed history request cannot fail it.
       const groupSlice = groupBy ? { ...slice, [groupBy]: code } : slice;
       if (kind === 'default' && defaults !== undefined && observations) {
         anchor = { value: (100 * defaults) / observations, method: 'count-anchor' };
-      } else if (groupSlice.PROJECT_TYPE === '_T' && groupSlice.SENIORITY === '_T') {
+      } else if (groupSlice.PROJECT_TYPE === '_T' && groupSlice.SENIORITY === '_T' && groupBy !== 'CURRENCY_TYPE') {
         const history = (await loadHistory()).filter((r) => !groupBy || r[groupBy] === code);
         const value = weightedAverage(history, kind);
         if (value !== undefined) anchor = { value, method: 'historical-anchor' };
@@ -135,6 +143,7 @@ export async function getRates(
       observations,
       signedAmountEURm: maxOf(latest, 'SA'),
       ci90: kind === 'default' ? confidenceInterval(latest, rate.value) : undefined,
+      ...(kind === 'recovery' ? recoveryDistribution(latest) : {}),
     });
   }
   return result;
@@ -182,6 +191,98 @@ export async function getHistory(
   return { points, conflictingYears: points.filter((p) => p.candidates.length > 1).map((p) => p.year) };
 }
 
+export interface SovereignBenchmark {
+  /** GEMs average default rate (ADR), in percent. */
+  gems: number;
+  /** S&P default rate of sovereigns rated like the project country (S_P), in percent. */
+  sovereign: number;
+  vintage: string;
+}
+
+/**
+ * GEMs default rate vs. its sovereign benchmark, per region/income group. Areas where either metric has several
+ * values are left out: the global aggregate is split by a dimension the API does not expose (17 ADR values in 2025).
+ */
+export async function getSovereignBenchmark(): Promise<Map<string, SovereignBenchmark>> {
+  const rows = await fetchObservations({ DATABASE_ID, INDICATOR: SOVEREIGN_BENCHMARK_INDICATOR });
+  const byArea = new Map<string, Observation[]>();
+  for (const row of rows) {
+    const group = byArea.get(row.REF_AREA);
+    if (group) group.push(row);
+    else byArea.set(row.REF_AREA, [row]);
+  }
+  const result = new Map<string, SovereignBenchmark>();
+  for (const [area, areaRows] of byArea) {
+    const vintage = latestVintage(areaRows);
+    const latest = areaRows.filter((r) => r.TIME_PERIOD === vintage);
+    const gems = distinct(latest.filter((r) => r.METRIC === 'ADR'));
+    const sovereign = distinct(latest.filter((r) => r.METRIC === 'S_P'));
+    if (gems.length === 1 && sovereign.length === 1) result.set(area, { gems: gems[0], sovereign: sovereign[0], vintage });
+  }
+  return result;
+}
+
+const RETURN_DIMENSIONS = ['CURRENCY_TYPE', 'PROJECT_TYPE', 'SENIORITY'] as const;
+
+export interface ReturnEntry {
+  /** `TOTAL` (code `_T`) for all loans, otherwise the one dimension the row is split by. */
+  dimension: 'TOTAL' | (typeof RETURN_DIMENSIONS)[number];
+  code: string;
+  /** Average total spread (TS), in percent. */
+  totalSpread?: Selection;
+  /** Average loss rate (LR) = average default rate × (1 − average recovery rate), in percent. */
+  lossRate?: Selection;
+}
+
+export interface Returns {
+  vintage: string;
+  entries: ReturnEntry[];
+  /** Rows dated other than the publication vintage (the project-finance spread is dated 2006); not used. */
+  misdated: { dimension: ReturnEntry['dimension']; code: string; metric: string; timePeriod: string }[];
+}
+
+/** Average total spread and loss rate of private lending (global only), overall and by one breakdown at a time. */
+export async function getReturns(): Promise<Returns> {
+  const rows = await fetchObservations({ DATABASE_ID, INDICATOR: RETURNS_INDICATOR, REF_AREA: 'WLD' });
+  const vintage = latestVintage(rows);
+  const groups = new Map<string, { dimension: ReturnEntry['dimension']; code: string; rows: Observation[] }>();
+  const misdated = new Map<string, Returns['misdated'][number]>();
+  for (const row of rows) {
+    const split = RETURN_DIMENSIONS.filter((d) => row[d] !== '_T');
+    if (split.length > 1) continue;
+    const dimension = split[0] ?? 'TOTAL';
+    const code = split[0] ? String(row[split[0]]) : '_T';
+    const key = `${dimension}:${code}`;
+    if (row.TIME_PERIOD !== vintage) {
+      misdated.set(`${key}:${row.METRIC}:${row.TIME_PERIOD}`, { dimension, code, metric: row.METRIC, timePeriod: row.TIME_PERIOD });
+      continue;
+    }
+    const group = groups.get(key);
+    if (group) group.rows.push(row);
+    else groups.set(key, { dimension, code, rows: [row] });
+  }
+  const order: ReturnEntry['dimension'][] = ['TOTAL', ...RETURN_DIMENSIONS];
+  const entries = [...groups.values()]
+    .sort((a, b) => order.indexOf(a.dimension) - order.indexOf(b.dimension))
+    .map(({ dimension, code, rows: groupRows }) => {
+      const entry: ReturnEntry = { dimension, code };
+      const spread = groupRows.filter((r) => r.METRIC === 'TS');
+      const loss = groupRows.filter((r) => r.METRIC === 'LR');
+      if (spread.length) entry.totalSpread = selectRate(spread);
+      if (loss.length) entry.lossRate = selectRate(loss);
+      return entry;
+    });
+  // Only report an old-dated value as not shown when the vintage has no value for that metric.
+  const shown = new Set(
+    entries.flatMap((e) => [e.totalSpread && `${e.dimension}:${e.code}:TS`, e.lossRate && `${e.dimension}:${e.code}:LR`]),
+  );
+  return {
+    vintage,
+    entries,
+    misdated: [...misdated.values()].filter((m) => !shown.has(`${m.dimension}:${m.code}:${m.metric}`)),
+  };
+}
+
 /**
  * Pick the headline value among rows sharing one visible key.
  * 1. Closest to an anchor: defaults ÷ observations (default rates; exact) or the period average reconstructed
@@ -203,6 +304,20 @@ function selectRate(rows: Observation[], anchor?: Anchor): Selection {
   if (published.length === 1) return { value: published[0], candidates, method: 'published-precision' };
 
   return { value: candidates[0], candidates, method: 'first-listed' };
+}
+
+/** Recovery percentiles if each has exactly one value; flags percentiles split by a hidden dimension. */
+function recoveryDistribution(rows: Observation[]): Pick<RateStat, 'distribution' | 'distributionOmitted'> {
+  const values = Object.entries(PERCENTILE_METRICS).map(
+    ([key, metric]) => [key, distinct(rows.filter((r) => r.METRIC === metric))] as const,
+  );
+  if (values.every(([, v]) => v.length === 0)) return {};
+  if (values.some(([, v]) => v.length !== 1)) return { distributionOmitted: true };
+  return { distribution: Object.fromEntries(values.map(([key, v]) => [key, v[0]])) as RecoveryDistribution };
+}
+
+function latestVintage(rows: Observation[]): string {
+  return rows.reduce((max, r) => (r.TIME_PERIOD > max ? r.TIME_PERIOD : max), '');
 }
 
 /**

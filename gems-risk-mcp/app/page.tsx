@@ -99,7 +99,7 @@ export default function Home() {
                       fontSize: '0.85rem',
                       color: '#666'
                     }}>
-                      10 tools
+                      13 tools
                     </span>
                     <span style={{
                       padding: '0.25rem 0.75rem',

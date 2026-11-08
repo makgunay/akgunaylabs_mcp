@@ -95,9 +95,9 @@ If your MCP client supports direct HTTP connections:
 
 ## 📊 Available Tools
 
-The server provides **10 specialized tools** for querying credit risk data. `region` parameters accept the 7 regions and 4 World Bank income groups (`high-income`, `upper-middle-income`, `lower-middle-income`, `low-income`). Default rates come with their 90% confidence interval where GEMs publishes one.
+The server provides **13 specialized tools** for querying credit risk data. `region` parameters accept the 7 regions and 4 World Bank income groups (`high-income`, `upper-middle-income`, `lower-middle-income`, `low-income`). Default rates come with their 90% confidence interval where GEMs publishes one. `get_recovery_rates`, `query_credit_risk` and `get_country_risk` also show the recovery distribution (10th, 25th, median, 75th and 90th percentile) where Data360 publishes a single one for the breakdown.
 
-**Structured output:** every tool returns, alongside the markdown answer, a JSON `structuredContent` object described by its `outputSchema`: `status` (`ok`, `no_data`, `invalid_input`, `error`), `data_source`, publication `vintage`, Data360 `indicators`, effective `filters`, `records` (one per region, sector, project type, seniority level or year, with `default_rate`/`recovery_rate` as `{ value_pct, candidates_pct, method }`, confidence interval, expected loss and sample counts) and `notes` (the same warnings as the ⚠️ lines in the text). `candidates_pct` lists every value Data360 returned for the key; more than one means the breakdown was ambiguous and `method` tells how the shown value was chosen.
+**Structured output:** every tool returns, alongside the markdown answer, a JSON `structuredContent` object described by its `outputSchema`: `status` (`ok`, `no_data`, `invalid_input`, `error`), `data_source`, publication `vintage`, Data360 `indicators`, effective `filters`, `records` (one per region, sector, project type, seniority level, loan currency or year, with `default_rate`/`recovery_rate` as `{ value_pct, candidates_pct, method }`, confidence interval, recovery distribution, expected loss and sample counts; `sovereign_benchmark_pct`, `total_spread` and `loss_rate` for the benchmark and spread tools) and `notes` (the same warnings as the ⚠️ lines in the text). `candidates_pct` lists every value Data360 returned for the key; more than one means the breakdown was ambiguous and `method` tells how the shown value was chosen.
 
 ### 1. `get_default_rates`
 Query average default rates by region or income group, with confidence interval and sample size
@@ -133,11 +133,12 @@ Rank countries by private sector default rate
 ```
 
 ### 5. `get_sector_analysis`
-Global default and recovery rates by sector (IFC categories such as banking, infrastructure, renewables; GICS sectors such as energy, utilities)
+Default and recovery rates by sector (IFC categories such as banking, infrastructure, renewables; GICS sectors such as energy, utilities) for a region (`region`, default global). Private sector data is published per region; public sector data only globally; income groups have no sector breakdown.
 
 **Example:**
 ```
 What's the private sector default rate for infrastructure lending?
+Compare sectors in Latin America
 ```
 
 ### 6. `get_project_type_analysis`
@@ -149,11 +150,12 @@ Compare project finance vs corporate finance in terms of credit risk
 ```
 
 ### 7. `get_time_series`
-Track annual default or recovery rates over time
+Track annual default or recovery rates over time, optionally for one sector (`sector`, e.g. infrastructure; sector history is published for the global aggregate only)
 
 **Example:**
 ```
 Show me the 10-year default rate trend for South Asia
+How has the infrastructure default rate evolved since 2010?
 ```
 
 ### 8. `get_seniority_analysis`
@@ -180,6 +182,30 @@ Country profile: default rate with confidence interval, recovery rate, expected 
 What's the credit risk of lending to Kenyan companies?
 ```
 
+### 11. `get_currency_analysis`
+Default and recovery rates by loan currency: foreign currency, local currency, pegged local currency, mixed currency. Per region for private and public data; sovereign lending and income groups have no currency split.
+
+**Example:**
+```
+Are local-currency loans riskier than foreign-currency loans in Sub-Saharan Africa?
+```
+
+### 12. `get_sovereign_benchmark`
+GEMs default rate per region and income group next to the S&P default rate of sovereigns with the same rating as the project's country (`IFC_GEM_DRVSVG`). The global aggregate is omitted because Data360 returns several values for it.
+
+**Example:**
+```
+Do GEMs loans default more or less often than sovereign ratings imply?
+```
+
+### 13. `get_spreads_and_losses`
+Average total spread and average loss rate (default rate × (1 − recovery rate)) of private sector lending, overall and by currency, project type and seniority (`IFC_GEM_PR_RTNS`, global only). Values Data360 dates outside the publication vintage are flagged and not shown.
+
+**Example:**
+```
+How do spreads compare with loss rates for project finance vs corporate finance?
+```
+
 ---
 
 ## 🌍 Coverage
@@ -200,7 +226,7 @@ High, upper-middle, lower-middle and low income (World Bank classification).
 90 countries for private sector lending (default rates, with recoveries for 55), 14 for public sector lending.
 
 ### Sectors (22 categories)
-IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services, Mixed. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Private lending sectors are also published per region and for many countries — use `query_multidimensional` (e.g. infrastructure in Latin America) or `get_country_risk`; public sector data is global only, and sovereign data has no sector split. Labels follow the Data360 dimensions API (`POST /data360/portal/v1/dimensions`).
+IFC categories: Banking, Financial Institutions, Non-banking Financial Institutions, Non-financial Institutions, Infrastructure, Renewables, Services, Mixed. GICS sectors: Financials, Utilities, Industrials, Consumer Staples, Consumer Discretionary, Materials, Communication Services, Health Care, Energy, Real Estate, Information Technology, Administration, Others. Private lending sectors are also published per region and for many countries — use `get_sector_analysis` with `region`, `query_multidimensional` (e.g. infrastructure in Latin America) or `get_country_risk`; public sector data is global only, and sovereign data has no sector split. Labels follow the Data360 dimensions API (`POST /data360/portal/v1/dimensions`).
 
 ### Project Types
 Corporate Finance, Project Finance, Financial Institutions, Structured Finance, Real Estate Finance (private), Other (public recovery only).
@@ -449,14 +475,23 @@ You don't need to know the technical parameters:
 
 ## 📖 Version Information
 
-**Current Version:** 1.2.0
+**Current Version:** 1.3.0
 **Data Coverage:** 2025 GEMs publication (sovereign 1984–2025, public and private 1994–2025)
-**Tools Available:** 10
+**Tools Available:** 13
 **Supported Regions:** 7 regions + 4 income groups + 90 countries
 **Sector Categories:** 21
 **Data Sources:** 3 (Sovereign, Public, Private)
 
 ---
+
+## ✨ What's New in 1.3.0
+
+- ✅ **Private by default** - Tools default to `data_source: "private"` (see the migration note under Data Sources)
+- ✅ **Structured output** - Every tool returns typed JSON (`structuredContent` with an `outputSchema`) alongside the text
+- ✅ **New tools** - `get_currency_analysis` (loan currency), `get_sovereign_benchmark` (GEMs vs S&P sovereign default rates), `get_spreads_and_losses` (average total spread and loss rate)
+- ✅ **Recovery distribution** - Percentiles of recoveries where Data360 publishes them unambiguously
+- ✅ **Regional sectors & sector history** - `get_sector_analysis` takes `region`; `get_time_series` takes `sector`
+- ✅ **MCP SDK v2** - mcp-handler 2, MCP SDK v2 and zod 4 (fixes a high-severity zod 3 advisory); Streamable HTTP at `/api/gems-risk/mcp` serves both 2025- and 2026-era clients
 
 ## ✨ What's New in 1.2.0
 

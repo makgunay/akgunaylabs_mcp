@@ -92,6 +92,7 @@ export function rateRecord(
     if (rr.defaults !== undefined) record.recovery_defaults = rr.defaults;
     if (rr.defaultsUnit !== undefined) record.recovery_defaults_unit = rr.defaultsUnit;
     if (rr.signedAmountEURm !== undefined) record.recovery_signed_amount_eur_m = rr.signedAmountEURm;
+    if (rr.distribution) record.recovery_distribution_pct = rr.distribution;
   }
   if (dr && rr) record.expected_loss_pct = expectedLoss(dr.rate.value, rr.rate.value);
   return record;

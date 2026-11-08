@@ -17,6 +17,9 @@ import {
   SECTOR_KEYS,
   SECTOR_NAMES,
   SENIORITY_NAMES,
+  CURRENCY_TYPE_NAMES,
+  RETURNS_INDICATOR,
+  SOVEREIGN_BENCHMARK_INDICATOR,
   type DataSource,
 } from '@/lib/gems-risk/catalog';
 import { Data360Error } from '@/lib/gems-risk/data360';
@@ -24,6 +27,7 @@ import {
   expectedLoss,
   newOutput,
   rateRecord,
+  selectionOutput,
   ToolOutputSchema,
   type OutputRecord,
   type ToolOutput,
@@ -32,6 +36,9 @@ import {
   GLOBAL_TOTAL,
   getHistory,
   getRates,
+  getReturns,
+  getSovereignBenchmark,
+  type ReturnEntry,
   type History,
   type RateStat,
   type Selection,
@@ -87,15 +94,21 @@ function period(source: DataSource, vintage: string): string {
 
 const STALE_NOTE = 'This is the latest GEMs publication on Data360; it may predate the current GEMs report.';
 
+/** Record `vintage` in `out`; returns the stale-publication suffix for the source line ('' when current). */
+function recordVintage(vintage: string, out: ToolOutput): string {
+  out.vintage = vintage;
+  if (Number(vintage) >= new Date().getFullYear() - 1) return '';
+  out.notes.push(STALE_NOTE);
+  return ` ⚠️ ${STALE_NOTE}`;
+}
+
 /** Source line for `out.indicators`; records the vintage (and staleness) in `out`. */
 function attribution(source: DataSource, vintage: string, out: ToolOutput): string {
   const info = DATA_SOURCE_INFO[source];
-  out.vintage = vintage;
-  const isStale = Number(vintage) < new Date().getFullYear() - 1;
-  if (isStale) out.notes.push(STALE_NOTE);
+  const stale = recordVintage(vintage, out);
   return (
     `*Source: World Bank Data360, IFC GEMs (${out.indicators.join(', ')}), ${info.label} — ${info.description}. ` +
-    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${isStale ? ` ⚠️ ${STALE_NOTE}` : ''}*`
+    `Publication vintage ${vintage}; rates are averages over ${period(source, vintage)}.${stale}*`
   );
 }
 
@@ -206,6 +219,33 @@ function benchmarkLine(source: DataSource, defaultRate: number, global: RateStat
   );
 }
 
+const DISTRIBUTION_OMITTED = 'Distribution not shown: Data360 returns several distributions for this breakdown.';
+
+/** Recovery percentiles line, or why they are not shown (also in `notes`); empty when none are published. */
+function distributionLine(rr: RateStat, notes: string[]): string {
+  const d = rr.distribution;
+  if (d) {
+    return `**Recovery distribution:** 10th ${pct(d.p10)} · 25th ${pct(d.p25)} · median ${pct(d.median)} · 75th ${pct(d.p75)} · 90th ${pct(d.p90)}\n`;
+  }
+  if (!rr.distributionOmitted) return '';
+  notes.push(DISTRIBUTION_OMITTED);
+  return `${DISTRIBUTION_OMITTED}\n`;
+}
+
+const BENCHMARK_AREAS = ['EAS', 'ECS', 'LCN', 'MEA', 'SAS', 'SSF', 'HIC', 'UMC', 'LMC', 'LIC'];
+
+const RETURN_GROUPS: { dimension: ReturnEntry['dimension']; heading: string; names: Record<string, string> }[] = [
+  { dimension: 'TOTAL', heading: 'All loans', names: { _T: 'All loans' } },
+  { dimension: 'CURRENCY_TYPE', heading: 'Currency', names: CURRENCY_TYPE_NAMES },
+  { dimension: 'PROJECT_TYPE', heading: 'Project type', names: PROJECT_TYPE_NAMES },
+  { dimension: 'SENIORITY', heading: 'Seniority', names: SENIORITY_NAMES },
+];
+
+function returnLabel(entry: Pick<ReturnEntry, 'dimension' | 'code'>): string {
+  const names = RETURN_GROUPS.find((g) => g.dimension === entry.dimension)?.names;
+  return names?.[entry.code] ?? entry.code;
+}
+
 /** Annual history point as a TIME_PERIOD record; several values for a year mean the first listed is shown. */
 function historyRecord(kind: 'default' | 'recovery', point: History['points'][number]): OutputRecord {
   const rate = {
@@ -244,7 +284,7 @@ function breakdownRecords(dimension: OutputRecord['dimension'], rows: BreakdownR
 async function breakdown(
   source: DataSource,
   slice: Slice,
-  dimension: 'SECTOR' | 'PROJECT_TYPE',
+  dimension: 'SECTOR' | 'PROJECT_TYPE' | 'CURRENCY_TYPE',
   names: Record<string, string>,
 ): Promise<{ rows: BreakdownRow[]; vintage?: string; defaults: Map<string, RateStat>; recoveries: Map<string, RateStat> }> {
   const [defaults, recoveries] = await Promise.all([
@@ -309,6 +349,7 @@ const handler = createMcpHandler(
           const text =
             `# Recovery Rates: ${AREA_NAMES[code]}\n\n` +
             `**Average recovery rate:** ${pct(stat.rate.value)}\n` +
+            distributionLine(stat, out.notes) +
             `**Period:** ${period(source, stat.vintage)}\n` +
             sampleLine(stat) +
             ambiguityNote('Recovery rate', stat.rate, out.notes) +
@@ -342,6 +383,7 @@ const handler = createMcpHandler(
           let text = `# Credit Risk Profile: ${AREA_NAMES[code]}\n\n## Key Metrics\n\n`;
           text += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
           text += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          if (rr) text += distributionLine(rr, out.notes);
           text += `**Period:** ${period(source, vintage)}\n`;
           text += sampleLines(dr, rr);
           if (dr) text += ambiguityNote('Default rate', dr.rate, out.notes);
@@ -361,39 +403,49 @@ const handler = createMcpHandler(
       'get_sector_analysis',
       {
         title: 'Credit risk by sector',
-        description: `Global default and recovery rates by economic sector (IFC categories and GICS sectors), or one sector in detail. ${SOURCE_DESCRIPTION}`,
+        description:
+          'Default and recovery rates by economic sector (IFC categories and GICS sectors) in a region, or one sector in detail. ' +
+          `Private sector data is published per region; public sector data only globally. ${SOURCE_DESCRIPTION}`,
         inputSchema: z.object({
           sector: z.enum(SECTOR_KEYS).optional().describe('Sector to analyze, or "all" (default) for a comparison table'),
+          region: regionParam
+            .optional()
+            .describe('Region to analyze (default: global); income groups have no sector breakdown. Public sector data is global only.'),
           data_source: dataSourceParam,
         }),
         outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ sector = 'all', data_source: source = 'private' }) => {
+      ({ sector = 'all', region = 'global', data_source: source = 'private' }) => {
         const info = DATA_SOURCE_INFO[source];
-        const out = newOutput(source, { sector, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
+        const out = newOutput(source, { sector, region, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
         return guarded(out, async () => {
+          const area = AREAS[region];
           const code = SECTORS[sector];
           if (code === '_T') {
-            const { rows, vintage } = await breakdown(source, GLOBAL_TOTAL, 'SECTOR', SECTOR_NAMES);
-            if (!rows.length || !vintage) return noData('sector breakdown', [`Data source: ${source}`], out);
+            const { rows, vintage } = await breakdown(source, { ...GLOBAL_TOTAL, REF_AREA: area }, 'SECTOR', SECTOR_NAMES);
+            if (!rows.length || !vintage) {
+              return noData('sector breakdown', [`Region: ${AREA_NAMES[area]}`, `Data source: ${source}`], out);
+            }
             out.records.push(...breakdownRecords('SECTOR', rows));
             const text =
-              `# Credit Risk by Sector (Global, ${info.label})\n\n` +
+              `# Credit Risk by Sector (${AREA_NAMES[area]}, ${info.label})\n\n` +
               breakdownTable('Sector', rows) +
               `\n${attribution(source, vintage, out)}`;
             return { text, data: out };
           }
 
-          const slice = { ...GLOBAL_TOTAL, SECTOR: code };
+          const slice = { ...GLOBAL_TOTAL, REF_AREA: area, SECTOR: code };
           const [dr, rr, global] = await Promise.all([
             single(source, 'default', slice),
             single(source, 'recovery', slice),
             single(source, 'default', GLOBAL_TOTAL),
           ]);
-          if (!dr && !rr) return noData('sector data', [`Sector: ${SECTOR_NAMES[code]}`, `Data source: ${source}`], out);
+          if (!dr && !rr) {
+            return noData('sector data', [`Sector: ${SECTOR_NAMES[code]}`, `Region: ${AREA_NAMES[area]}`, `Data source: ${source}`], out);
+          }
           out.records.push(rateRecord('SECTOR', code, SECTOR_NAMES[code], dr, rr));
-          let text = `# Sector Analysis: ${SECTOR_NAMES[code]} (Global)\n\n`;
+          let text = `# Sector Analysis: ${SECTOR_NAMES[code]} (${AREA_NAMES[area]})\n\n`;
           text += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
           text += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
           if (dr && rr) text += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))}\n`;
@@ -513,30 +565,40 @@ const handler = createMcpHandler(
       'get_time_series',
       {
         title: 'Historical credit risk trend',
-        description: `Annual default or recovery rates over recent years for a region. ${SOURCE_DESCRIPTION} Sovereign history is published for the global aggregate only.`,
+        description:
+          `Annual default or recovery rates over recent years for a region, optionally for one sector. ${SOURCE_DESCRIPTION} ` +
+          'Sovereign history is published for the global aggregate only.',
         inputSchema: z.object({
           region: regionParam.optional().describe('Region to analyze (default: global); income groups have no history'),
           years: z.number().int().min(1).max(45).optional().describe('Number of most recent published years (default: 10)'),
           metric: z.enum(['default-rate', 'recovery-rate']).optional().describe('Series to return (default: default-rate)'),
+          sector: z.enum(SECTOR_KEYS).optional().describe('Sector (default: all sectors); sector history is published for region "global" only'),
           data_source: dataSourceParam,
         }),
         outputSchema: ToolOutputSchema,
         annotations: READ_ONLY,
       },
-      ({ region = 'global', years = 10, metric = 'default-rate', data_source: source = 'private' }) => {
+      ({ region = 'global', years = 10, metric = 'default-rate', sector = 'all', data_source: source = 'private' }) => {
         const info = DATA_SOURCE_INFO[source];
         const kind = metric === 'default-rate' ? 'default' : 'recovery';
         const out = newOutput(
           source,
-          { region, years: String(years), metric, data_source: source },
+          { region, years: String(years), metric, sector, data_source: source },
           [kind === 'default' ? info.defaultHistory : info.recoveryHistory],
         );
         return guarded(out, async () => {
           const code = AREAS[region];
+          const sectorCode = SECTORS[sector];
           const label = kind === 'default' ? 'Default Rate' : 'Recovery Rate';
-          const history = await getHistory(source, kind, code);
+          const history = await getHistory(source, kind, code, sectorCode);
           const points = history.points.slice(-years);
-          if (!points.length) return noData(`${label.toLowerCase()} history`, [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
+          if (!points.length) {
+            return noData(
+              `${label.toLowerCase()} history`,
+              [`Region: ${AREA_NAMES[code]}`, `Sector: ${SECTOR_NAMES[sectorCode]}`, `Data source: ${source}`],
+              out,
+            );
+          }
 
           const first = points[0];
           const last = points[points.length - 1];
@@ -561,7 +623,8 @@ const handler = createMcpHandler(
             slope_pp_per_year: points.length < 3 ? null : slope,
           };
 
-          let text = `# Historical ${label}: ${AREA_NAMES[code]} (${info.label})\n\n`;
+          const sectorSuffix = sectorCode === '_T' ? '' : ` — ${SECTOR_NAMES[sectorCode]}`;
+          let text = `# Historical ${label}: ${AREA_NAMES[code]} (${info.label})${sectorSuffix}\n\n`;
           text += `**Period:** ${first.year}–${last.year}`;
           text += points.length < span ? ` (${points.length} published years)\n\n` : ` (${points.length} years)\n\n`;
           text += '## Summary\n\n';
@@ -733,6 +796,7 @@ const handler = createMcpHandler(
           let text = `# Country Credit Risk: ${name} (${info.label})\n\n## Key Metrics\n\n`;
           text += `**Default rate:** ${dr ? defaultRateText(dr) : 'not published'}\n`;
           text += `**Recovery rate:** ${rr ? pct(rr.rate.value) : 'not published'}\n`;
+          if (rr) text += distributionLine(rr, out.notes);
           if (dr && rr) text += `**Expected loss:** ${pct(expectedLoss(dr.rate.value, rr.rate.value))} per year\n`;
           text += `**Period:** ${period(source, vintage)}\n`;
           text += sampleLines(dr, rr);
@@ -759,6 +823,149 @@ const handler = createMcpHandler(
             text += '\n';
           }
           return { text: text + attribution(source, vintage, out), data: out };
+        });
+      },
+    );
+
+    server.registerTool(
+      'get_currency_analysis',
+      {
+        title: 'Credit risk by loan currency',
+        description:
+          'Default and recovery rates by loan currency in a region: foreign currency (FC), local currency (LC), local ' +
+          'currency pegged to another currency (LC_P) and mixed-currency loans (X). Private and public sector data are ' +
+          `published per region; sovereign lending has no currency split. ${SOURCE_DESCRIPTION}`,
+        inputSchema: z.object({
+          region: regionParam.optional().describe('Region to analyze (default: global); income groups have no currency breakdown'),
+          data_source: dataSourceParam,
+        }),
+        outputSchema: ToolOutputSchema,
+        annotations: READ_ONLY,
+      },
+      ({ region = 'global', data_source: source = 'private' }) => {
+        const info = DATA_SOURCE_INFO[source];
+        const out = newOutput(source, { region, data_source: source }, [info.defaultIndicator, info.recoveryIndicator]);
+        return guarded(out, async () => {
+          const code = AREAS[region];
+          const { rows, vintage } = await breakdown(source, { ...GLOBAL_TOTAL, REF_AREA: code }, 'CURRENCY_TYPE', CURRENCY_TYPE_NAMES);
+          if (!rows.length || !vintage) {
+            return noData('currency breakdown', [`Region: ${AREA_NAMES[code]}`, `Data source: ${source}`], out);
+          }
+          out.records.push(...breakdownRecords('CURRENCY_TYPE', rows));
+          const text =
+            `# Credit Risk by Loan Currency: ${AREA_NAMES[code]} (${info.label})\n\n` +
+            breakdownTable('Currency', rows) +
+            `\n${attribution(source, vintage, out)}`;
+          return { text, data: out };
+        });
+      },
+    );
+
+    server.registerTool(
+      'get_sovereign_benchmark',
+      {
+        title: 'GEMs default rates vs sovereign benchmark',
+        description:
+          'Observed GEMs default rate per region and income group next to its sovereign benchmark: the S&P default rate ' +
+          "of sovereigns with the same rating as the project's country. Shows whether GEMs lending defaulted more or less " +
+          'often than sovereign ratings imply.',
+        inputSchema: z.object({}),
+        outputSchema: ToolOutputSchema,
+        annotations: READ_ONLY,
+      },
+      () => {
+        const out = newOutput(null, {}, [SOVEREIGN_BENCHMARK_INDICATOR]);
+        return guarded(out, async () => {
+          const benchmark = await getSovereignBenchmark();
+          const areas = BENCHMARK_AREAS.filter((a) => benchmark.has(a));
+          if (!areas.length) return noData('sovereign benchmark', ['Indicator: IFC_GEM_DRVSVG'], out);
+          const omitted = 'Global aggregate omitted: Data360 returns several values for it.';
+          out.notes.push(omitted);
+          let text =
+            '# GEMs Default Rates vs Sovereign Benchmark\n\n' +
+            "Benchmark: S&P default rate of sovereigns with the same rating as the project's country. " +
+            'Difference = GEMs rate − benchmark.\n\n' +
+            '| Area | GEMs default rate | S&P sovereign benchmark | Difference |\n|---|---|---|---|\n';
+          for (const area of areas) {
+            const { gems, sovereign } = benchmark.get(area)!;
+            const diff = gems - sovereign;
+            text += `| ${AREA_NAMES[area]} | ${pct(gems)} | ${pct(sovereign)} | ${diff > 0 ? '+' : ''}${diff.toFixed(2)} pp |\n`;
+            out.records.push({
+              dimension: 'REF_AREA',
+              code: area,
+              label: AREA_NAMES[area],
+              default_rate: selectionOutput({ value: gems, candidates: [gems], method: 'unique' }),
+              sovereign_benchmark_pct: sovereign,
+            });
+          }
+          const vintages = [...new Set(areas.map((a) => benchmark.get(a)!.vintage))].sort();
+          if (vintages.length > 1) {
+            const mixed = `Areas come from different publication vintages (${vintages.join(', ')}).`;
+            out.notes.push(mixed);
+            text += `\n⚠️ ${mixed}\n`;
+          }
+          const latest = vintages[vintages.length - 1];
+          const stale = recordVintage(latest, out);
+          text +=
+            `\n${omitted}\n\n` +
+            `*Source: World Bank Data360, IFC GEMs (${SOVEREIGN_BENCHMARK_INDICATOR}). Publication vintage ${latest}.${stale}*`;
+          return { text, data: out };
+        });
+      },
+    );
+
+    server.registerTool(
+      'get_spreads_and_losses',
+      {
+        title: 'Spreads and loss rates (private lending)',
+        description:
+          'Average total spread and average loss rate of private sector lending (global), overall and by loan currency, ' +
+          'project type and seniority. Average total spread: the average of annual total spreads, each the average across ' +
+          'contracts signed in the prior year. Average loss rate: average default rate × (1 − average recovery rate).',
+        inputSchema: z.object({}),
+        outputSchema: ToolOutputSchema,
+        annotations: READ_ONLY,
+      },
+      () => {
+        const out = newOutput('private', {}, [RETURNS_INDICATOR]);
+        return guarded(out, async () => {
+          const { vintage, entries, misdated } = await getReturns();
+          if (!entries.length) return noData('spreads or loss rates', ['Indicator: IFC_GEM_PR_RTNS'], out);
+          const cell = (s?: Selection) => (s ? pct(s.value) + marker(s) : 'n/a');
+          let text =
+            '# Spreads and Loss Rates (Private Sector Lending, Global)\n\n' +
+            '| Breakdown | Average total spread | Average loss rate |\n|---|---|---|\n';
+          for (const group of RETURN_GROUPS) {
+            const rows = entries.filter((e) => e.dimension === group.dimension);
+            if (!rows.length) continue;
+            if (group.dimension !== 'TOTAL') text += `| **${group.heading}** | | |\n`;
+            for (const entry of rows) {
+              const label = returnLabel(entry);
+              text += `| ${group.dimension === 'TOTAL' ? `**${label}**` : label} | ${cell(entry.totalSpread)} | ${cell(entry.lossRate)} |\n`;
+              const record: OutputRecord =
+                entry.dimension === 'TOTAL'
+                  ? { dimension: 'REF_AREA', code: 'WLD', label }
+                  : { dimension: entry.dimension, code: entry.code, label };
+              if (entry.totalSpread) record.total_spread = selectionOutput(entry.totalSpread);
+              if (entry.lossRate) record.loss_rate = selectionOutput(entry.lossRate);
+              out.records.push(record);
+            }
+          }
+          const shown = entries.flatMap((e) => [e.totalSpread, e.lossRate]).filter((s) => s !== undefined);
+          text += `\n${markerLegend(shown)}n/a = not published for this breakdown.\n`;
+          for (const m of misdated) {
+            const note =
+              `Data360 dates the ${returnLabel(m)} ${m.metric === 'TS' ? 'total spread' : 'loss rate'} ` +
+              `${m.timePeriod} instead of ${vintage}; not shown.`;
+            out.notes.push(note);
+            text += `\n⚠️ ${note}\n`;
+          }
+          text +=
+            '\nAverage total spread: average of annual total spreads, each across contracts signed in the prior year. ' +
+            'Average loss rate: average default rate × (1 − average recovery rate).\n\n' +
+            `*Source: World Bank Data360, IFC GEMs (${RETURNS_INDICATOR}), Private sector — ` +
+            `${DATA_SOURCE_INFO.private.description}. Publication vintage ${vintage}.${recordVintage(vintage, out)}*`;
+          return { text, data: out };
         });
       },
     );
