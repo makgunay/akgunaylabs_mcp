@@ -141,7 +141,8 @@ export async function getRates(
 }
 
 export interface History {
-  points: { year: number; rate: number }[];
+  /** `candidates`: distinct values for the year in API order; `rate` is the first. */
+  points: { year: number; rate: number; candidates: number[] }[];
   /** Years where Data360 returned conflicting values; the first listed value is used. */
   conflictingYears: number[];
 }
@@ -172,11 +173,13 @@ export async function getHistory(
     if (values) values.push(value);
     else byYear.set(year, [value]);
   }
-  const years = [...byYear.keys()].sort((a, b) => a - b);
-  return {
-    points: years.map((year) => ({ year, rate: byYear.get(year)![0] })),
-    conflictingYears: years.filter((year) => new Set(byYear.get(year)).size > 1),
-  };
+  const points = [...byYear.keys()]
+    .sort((a, b) => a - b)
+    .map((year) => {
+      const candidates = [...new Set(byYear.get(year))];
+      return { year, rate: candidates[0], candidates };
+    });
+  return { points, conflictingYears: points.filter((p) => p.candidates.length > 1).map((p) => p.year) };
 }
 
 /**

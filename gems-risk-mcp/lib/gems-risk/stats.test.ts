@@ -93,7 +93,7 @@ test('annual history is ordered by year and flags years with conflicting values'
   const years = history.points.map((p) => p.year);
   assert.deepEqual(years, [...years].sort((a, b) => a - b));
   assert.equal(new Set(years).size, years.length);
-  assert.deepEqual(history.points[0], { year: 1984, rate: 91.8 });
+  assert.deepEqual(history.points[0], { year: 1984, rate: 91.8, candidates: [91.8] });
   assert.deepEqual(history.conflictingYears, [2000, 2018, 2022, 2023, 2025]);
 });
 
