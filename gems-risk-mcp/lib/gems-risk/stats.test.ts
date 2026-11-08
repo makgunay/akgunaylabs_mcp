@@ -173,6 +173,18 @@ test('default and recovery rates break down by loan currency, each with its own 
   assert.equal(recoveries.get('LC_P')?.rate.value, 72.57);
 });
 
+test('the currency breakdown does not depend on the annual series', async () => {
+  // Every request for an annual-series (_H) indicator fails.
+  const healthy = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) =>
+    new URL(String(input)).searchParams.get('INDICATOR')?.endsWith('_H')
+      ? new Response('', { status: 500 })
+      : healthy(input)) as typeof fetch;
+  const recoveries = await getRates('private', 'recovery', GLOBAL_TOTAL, 'CURRENCY_TYPE');
+  assert.equal(recoveries.get('LC_P')?.rate.value, 72.57);
+  assert.ok(recoveries.has('_T'));
+});
+
 test('recovery percentiles are reported only when each has a single published value', async () => {
   const eas = (await getRates('private', 'recovery', { ...GLOBAL_TOTAL, REF_AREA: 'EAS' })).get('EAS');
   assert.deepEqual(eas?.distribution, { p10: 22.203054, p25: 43.167597, median: 86.784158, p75: 99.129323, p90: 100 });

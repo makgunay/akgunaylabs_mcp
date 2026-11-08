@@ -120,11 +120,12 @@ export async function getRates(
 
     let anchor: Anchor | undefined;
     if (distinct(rateRows).length > 1) {
-      // Annual series exist only for project-type/seniority totals.
+      // Annual series exist only for project-type/seniority totals and have no currency split, so a currency
+      // grouping could only anchor its `_T` aggregate; that is skipped so a failed history request cannot fail it.
       const groupSlice = groupBy ? { ...slice, [groupBy]: code } : slice;
       if (kind === 'default' && defaults !== undefined && observations) {
         anchor = { value: (100 * defaults) / observations, method: 'count-anchor' };
-      } else if (groupSlice.PROJECT_TYPE === '_T' && groupSlice.SENIORITY === '_T') {
+      } else if (groupSlice.PROJECT_TYPE === '_T' && groupSlice.SENIORITY === '_T' && groupBy !== 'CURRENCY_TYPE') {
         const history = (await loadHistory()).filter((r) => !groupBy || r[groupBy] === code);
         const value = weightedAverage(history, kind);
         if (value !== undefined) anchor = { value, method: 'historical-anchor' };
